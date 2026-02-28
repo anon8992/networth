@@ -70,14 +70,45 @@ function generateDateRange(startDate, endDate) {
     return dates;
 }
 
+function getTodayDateStrMountain() {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Denver',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(new Date());
+
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== 'literal') values[part.type] = part.value;
+    }
+
+    return `${values.year}-${values.month}-${values.day}`;
+}
+
+function normalizeDailySeries(rows, maxDate) {
+    const byDate = new Map();
+    for (const row of rows || []) {
+        if (!Array.isArray(row) || row.length < 2) continue;
+        const dateStr = row[0];
+        const value = row[1];
+        if (typeof dateStr !== 'string' || typeof value !== 'number') continue;
+        if (dateStr > maxDate) continue;
+        byDate.set(dateStr, value);
+    }
+    return [...byDate.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
 function extendNetWorth() {
-    // load existing data
-    const netWorthData = loadJSON(NET_WORTH_FILE);
-    const contributionsData = loadJSON(CONTRIBUTIONS_FILE);
+    const today = getTodayDateStrMountain();
+
+    // load existing data and hard-clamp to dates that already happened in MT
+    let netWorthData = normalizeDailySeries(loadJSON(NET_WORTH_FILE), today);
+    let contributionsData = normalizeDailySeries(loadJSON(CONTRIBUTIONS_FILE), today);
     const trades = loadJSON(TRADES_FILE);
     const individualContributions = loadJSON(path.join(DATA_DIR, 'individualContributions.json')) || [];
 
-    if (!netWorthData || !contributionsData || !trades) {
+    if (!netWorthData.length || !contributionsData.length || !trades) {
         console.error('Missing required data files');
         process.exit(1);
     }
@@ -88,10 +119,10 @@ function extendNetWorth() {
     const lastNetWorth = lastNwEntry[1];
     let cumulativeContributions = lastContribEntry[1];
 
-    const today = new Date().toISOString().slice(0, 10);
-
     if (lastDate >= today) {
         console.log(`Already up to date (last: ${lastDate})`);
+        saveJSON(NET_WORTH_FILE, netWorthData);
+        saveJSON(CONTRIBUTIONS_FILE, contributionsData);
         return;
     }
 
@@ -153,6 +184,8 @@ function extendNetWorth() {
 
     // process each new date
     for (const dateStr of newDates) {
+        if (dateStr > today) break;
+
         // handle contributions for this date
         if (contributionsByDate[dateStr]) {
             cumulativeContributions += contributionsByDate[dateStr];

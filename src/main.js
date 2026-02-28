@@ -5,14 +5,21 @@ const chartStartCapMs = chartStartCapDateStr ? Date.parse(`${chartStartCapDateSt
 const useIntradayCharts = sharedConfig.useIntraday === true;
 
 const STOCK_INTERVAL_BY_RANGE = {
-    '1d': 'quarterhourly',
+    '1d': 'fivemin',
     '1w': 'semihourly',
-    '1m': 'hourly'
+    '1m': 'hourly',
+    '3m': 'hourly'
 };
+// temporary default startup ticker; set to null to revert to portfolio-on-load.
+const TEMP_INITIAL_TICKER = 'AMZN';
 
 const STOCK_PRICE_PATHS_BY_INTERVAL = {
     daily: (ticker) => [
         `data/stockPriceHistory/${ticker}.json`
+    ],
+    fivemin: (ticker) => [
+        `data/stockPriceHistory/fivemin/${ticker}.json`,
+        `data/stockPriceHistory/5m/${ticker}.json`
     ],
     hourly: (ticker) => [
         `data/stockPriceHistory/hourly/${ticker}.json`,
@@ -147,7 +154,12 @@ async function setStockDataForInterval(ticker, interval) {
     let effectiveInterval = interval;
     let seriesRows = await loadStockSeriesForInterval(ticker, interval);
 
-    if (seriesRows.length === 0 && interval !== 'daily') {
+    if (seriesRows.length === 0 && interval === 'fivemin') {
+        effectiveInterval = 'quarterhourly';
+        seriesRows = await loadStockSeriesForInterval(ticker, 'quarterhourly');
+    }
+
+    if (seriesRows.length === 0 && effectiveInterval !== 'daily') {
         effectiveInterval = 'daily';
         seriesRows = await loadStockSeriesForInterval(ticker, 'daily');
     }
@@ -159,24 +171,34 @@ async function setStockDataForInterval(ticker, interval) {
     return true;
 }
 
-async function ensureStockIntervalForRange(range) {
-    if (!useIntradayCharts) return;
-    if (AppState.currentView === 'portfolio') return;
+async function ensureStockIntervalForRange(range, options = {}) {
+    if (!useIntradayCharts) return false;
+    if (AppState.currentView === 'portfolio') return false;
 
     const desiredInterval = getPreferredStockIntervalForRange(range);
-    if (desiredInterval === AppState.activeStockInterval) return;
+    if (desiredInterval === AppState.activeStockInterval) return false;
 
     const ticker = AppState.currentView;
     const changed = await setStockDataForInterval(ticker, desiredInterval);
-    if (!changed) return;
+    if (!changed) return false;
 
-    if (AppState.chart) AppState.chart.destroy();
-    createChart();
+    if (options?.rebuildChart !== false) {
+        if (AppState.chart) AppState.chart.destroy();
+        createChart({ animateSeries: options?.animateSeries !== false });
+    }
+
+    return true;
 }
 
 async function init() {
     initUI();
-    warmHeaderFromLatestData();
+    const initialTicker = typeof TEMP_INITIAL_TICKER === 'string' && TEMP_INITIAL_TICKER.trim()
+        ? TEMP_INITIAL_TICKER.trim().toUpperCase()
+        : null;
+
+    if (!initialTicker) {
+        warmHeaderFromLatestData();
+    }
     const initialHoldingsPromise = initHoldingsPanel();
     await prepareData();
     AppState.portfolioDataPoints = AppState.dataPoints.slice();
@@ -184,6 +206,17 @@ async function init() {
     await initialHoldingsPromise;
     await initHoldingsPanel();
     initBackButton();
+
+    const canLoadInitialTicker = initialTicker && AppState.portfolioTickers.includes(initialTicker);
+    if (canLoadInitialTicker) {
+        await loadStock(initialTicker);
+        return;
+    }
+
+    if (initialTicker) {
+        console.warn(`temporary startup ticker ${initialTicker} not found; defaulting to portfolio`);
+    }
+
     createChart();
     await setRange('all');
 }
@@ -486,16 +519,19 @@ async function warmHeaderFromLatestData() {
     }
 }
 
-async function setRange(range) {
+async function setRange(range, options = {}) {
+    const fromRangeSelector = options?.fromRangeSelector === true;
+    const shouldAnimateRangeSelection = fromRangeSelector && sharedConfig.animateRangeSelectionRedraw === true;
     AppState.activeRange = range;
-    await ensureStockIntervalForRange(range);
 
-    if (!AppState.chart || !AppState.dataPoints.length) return;
-    const axis = AppState.chart.xAxis[0];
+    await ensureStockIntervalForRange(range, {
+        rebuildChart: !shouldAnimateRangeSelection,
+        animateSeries: shouldAnimateRangeSelection
+    });
 
-    let startMs = getStartDate(range);
-    const endMs = AppState.dataPoints[AppState.dataPoints.length - 1].date;
+    const endMs = AppState.dataPoints[AppState.dataPoints.length - 1]?.date;
     const firstDataMs = AppState.dataPoints[0]?.date;
+    let startMs = getStartDate(range);
 
     if (Number.isFinite(chartStartCapMs)) {
         if (!Number.isFinite(startMs) || startMs < chartStartCapMs) {
@@ -510,10 +546,35 @@ async function setRange(range) {
         }
     }
 
-    if (!Number.isFinite(startMs)) {
-        axis.setExtremes(null, null);
+    const hasExplicitRangeMin = Number.isFinite(startMs) && Number.isFinite(endMs);
+    const rangeMin = hasExplicitRangeMin ? Math.min(startMs, endMs) : null;
+    const rangeMax = Number.isFinite(endMs) ? endMs : null;
+
+    // Range-button animation should only be the full initial draw, never an axis tween.
+    if (shouldAnimateRangeSelection) {
+        if (AppState.chart) AppState.chart.destroy();
+        createChart({
+            animateSeries: true,
+            initialXAxisMin: rangeMin,
+            initialXAxisMax: rangeMax
+        });
+        updateRangeButtons(range);
+        return;
+    }
+
+    if (!AppState.chart || !AppState.dataPoints.length) return;
+    const axis = AppState.chart.xAxis[0];
+
+    // clear any active split before changing only axis extremes (e.g. 1m <-> 3m on same interval)
+    // to avoid blended/morphing look from stale hover zones.
+    if (fromRangeSelector && !shouldAnimateRangeSelection && typeof clearNetWorthSeriesSplit === 'function') {
+        clearNetWorthSeriesSplit();
+    }
+
+    if (!Number.isFinite(rangeMin)) {
+        axis.setExtremes(null, null, true, false);
     } else {
-        axis.setExtremes(Math.min(startMs, endMs), endMs);
+        axis.setExtremes(rangeMin, rangeMax, true, false);
     }
 
     updateRangeButtons(range);
@@ -575,7 +636,7 @@ function initRangeSelector() {
     document.getElementById('rangeSelector').addEventListener('click', (e) => {
         const btn = e.target.closest('button[data-range]');
         if (btn) {
-            void setRange(btn.dataset.range);
+            void setRange(btn.dataset.range, { fromRangeSelector: true });
         }
     });
 }

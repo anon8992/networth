@@ -1,7 +1,8 @@
 const wealthsimpleTradeDataSrc = 'activities_export';
 const chartStartDate = '2021-02-22';
 const chartYAxisStartsAtZero = false;
-const useIntraday = false;
+const animateRangeSelectionRedraw = true;
+const useIntraday = true;
 
 const blackBoxLogos = ['ASML', 'QQQ', 'PLTR', 'AMZN', 'SOXL', 'TQQQ', 'CURE', 'INTC', 'TMF', 'UBER', 'TSLL'];
 
@@ -46,6 +47,7 @@ globalThis.FolioScoutConfig = {
   wealthsimpleTradeDataSrc,
   chartStartDate,
   chartYAxisStartsAtZero,
+  animateRangeSelectionRedraw,
   useIntraday,
   blackBoxLogos,
   useAlphaVantageTickers,

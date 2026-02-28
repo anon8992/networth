@@ -3,9 +3,10 @@
 Update intraday stock price history JSON files with yfinance (no API keys).
 
 Outputs (rolling windows):
+- data/stockPriceHistory/fivemin/{TICKER}.json      -> 5m bars, last 1 day
 - data/stockPriceHistory/quarterhourly/{TICKER}.json  -> 15m bars, last 1 day
 - data/stockPriceHistory/semihourly/{TICKER}.json    -> 30m bars, last 7 days
-- data/stockPriceHistory/hourly/{TICKER}.json        -> 60m bars, last 30 days
+- data/stockPriceHistory/hourly/{TICKER}.json        -> 60m bars, last 90 days
 """
 
 from __future__ import annotations
@@ -37,9 +38,10 @@ class IntervalConfig:
 
 
 INTERVALS: tuple[IntervalConfig, ...] = (
+    IntervalConfig(folder="fivemin", interval="5m", lookback_days=1, period="5d"),
     IntervalConfig(folder="quarterhourly", interval="15m", lookback_days=1, period="5d"),
     IntervalConfig(folder="semihourly", interval="30m", lookback_days=7, period="1mo"),
-    IntervalConfig(folder="hourly", interval="60m", lookback_days=30, period="3mo"),
+    IntervalConfig(folder="hourly", interval="60m", lookback_days=90, period="6mo"),
 )
 
 
