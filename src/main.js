@@ -10,8 +10,8 @@ const STOCK_INTERVAL_BY_RANGE = {
     '1m': 'hourly',
     '3m': 'hourly'
 };
-// temporary default startup ticker; set to null to revert to portfolio-on-load.
-const TEMP_INITIAL_TICKER = 'AMZN';
+// temporary default startup ticker; keep null to default to portfolio-on-load.
+const TEMP_INITIAL_TICKER = null;
 
 const STOCK_PRICE_PATHS_BY_INTERVAL = {
     daily: (ticker) => [
@@ -33,6 +33,27 @@ const STOCK_PRICE_PATHS_BY_INTERVAL = {
         `data/stockPriceHistory/quarterhourly/${ticker}.json`,
         `data/stockPriceHistory/15m/${ticker}.json`
     ]
+};
+const PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL = {
+    fivemin: [
+        'data/networthIntraday/fivemin.json'
+    ],
+    quarterhourly: [
+        'data/networthIntraday/quarterhourly.json'
+    ],
+    semihourly: [
+        'data/networthIntraday/semihourly.json'
+    ],
+    hourly: [
+        'data/networthIntraday/hourly.json'
+    ]
+};
+const INTERVAL_FALLBACKS = {
+    fivemin: ['quarterhourly', 'semihourly', 'hourly', 'daily'],
+    quarterhourly: ['semihourly', 'hourly', 'daily'],
+    semihourly: ['hourly', 'daily'],
+    hourly: ['daily'],
+    daily: []
 };
 
 function normalizeChartStartDate(value) {
@@ -102,6 +123,39 @@ function normalizePriceSeriesRows(rows) {
     return out;
 }
 
+function normalizePortfolioIntradaySeriesRows(rows) {
+    const byMs = new Map();
+
+    for (const row of rows || []) {
+        if (!Array.isArray(row) || row.length < 2) continue;
+        const ms = parsePriceTimestamp(row[0]);
+        const netWorth = row[1];
+        const contribution = row[2];
+
+        if (!Number.isFinite(ms) || typeof netWorth !== 'number' || !Number.isFinite(netWorth)) continue;
+
+        const existing = byMs.get(ms) || {};
+        const nextContribution = (typeof contribution === 'number' && Number.isFinite(contribution))
+            ? contribution
+            : existing.contribution;
+
+        byMs.set(ms, {
+            netWorth,
+            contribution: nextContribution
+        });
+    }
+
+    return [...byMs.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([ms, row]) => ({
+            ms,
+            netWorth: row.netWorth,
+            contribution: row.contribution,
+            dateStr: toDateStrUTC(ms)
+        }))
+        .filter((row) => typeof row.dateStr === 'string');
+}
+
 async function loadStockSeriesForInterval(ticker, interval) {
     if (!AppState.stockSeriesCacheByTicker[ticker]) {
         AppState.stockSeriesCacheByTicker[ticker] = {};
@@ -129,6 +183,27 @@ async function loadStockSeriesForInterval(ticker, interval) {
     return [];
 }
 
+async function loadPortfolioSeriesForInterval(interval) {
+    if (AppState.portfolioSeriesCacheByInterval[interval]) return AppState.portfolioSeriesCacheByInterval[interval];
+
+    const candidatePaths = PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL[interval] || [];
+    for (const filePath of candidatePaths) {
+        try {
+            const data = await extractData(filePath);
+            const rows = normalizePortfolioIntradaySeriesRows(data);
+            if (rows.length > 0) {
+                AppState.portfolioSeriesCacheByInterval[interval] = rows;
+                return rows;
+            }
+        } catch (e) {
+            // try next path
+        }
+    }
+
+    AppState.portfolioSeriesCacheByInterval[interval] = [];
+    return [];
+}
+
 function buildStockDataPointsFromSeries(seriesRows) {
     if (!Array.isArray(seriesRows) || seriesRows.length === 0) return [];
     const initialPrice = seriesRows[0].price;
@@ -148,6 +223,49 @@ function buildStockDataPointsFromSeries(seriesRows) {
             dateStr: row.dateStr
         };
     });
+}
+
+function buildPortfolioDataPointsFromSeries(seriesRows) {
+    if (!Array.isArray(seriesRows) || seriesRows.length === 0) return [];
+
+    const points = [];
+    let lastKnownContribution = 0;
+    let cumulativeGrowth = 1;
+
+    for (let i = 0; i < seriesRows.length; i++) {
+        const row = seriesRows[i];
+        const netWorth = row?.netWorth;
+        if (typeof netWorth !== 'number' || !Number.isFinite(netWorth)) continue;
+
+        let contribution = row?.contribution;
+        if (typeof contribution !== 'number' || !Number.isFinite(contribution)) {
+            contribution = lastKnownContribution;
+        } else {
+            lastKnownContribution = contribution;
+        }
+
+        const prevPoint = points[points.length - 1];
+        if (prevPoint) {
+            const cashFlow = contribution - prevPoint.contribution;
+            const base = prevPoint.netWorth + cashFlow;
+            if (base !== 0) {
+                const ratio = netWorth / base;
+                if (Number.isFinite(ratio)) cumulativeGrowth *= ratio;
+            }
+        }
+
+        points.push({
+            netWorth,
+            contribution,
+            TWRR: (cumulativeGrowth - 1) * 100,
+            netGain: netWorth - contribution,
+            index: points.length,
+            date: row.ms,
+            dateStr: row.dateStr
+        });
+    }
+
+    return points;
 }
 
 async function setStockDataForInterval(ticker, interval) {
@@ -171,15 +289,44 @@ async function setStockDataForInterval(ticker, interval) {
     return true;
 }
 
+async function setPortfolioDataForInterval(interval) {
+    const fallbackOrder = [interval, ...(INTERVAL_FALLBACKS[interval] || [])];
+
+    for (const candidateInterval of fallbackOrder) {
+        if (candidateInterval === 'daily') {
+            if (!Array.isArray(AppState.portfolioDataPoints) || AppState.portfolioDataPoints.length === 0) continue;
+            AppState.dataPoints = AppState.portfolioDataPoints.slice();
+            AppState.activeStockInterval = 'daily';
+            return true;
+        }
+
+        const rows = await loadPortfolioSeriesForInterval(candidateInterval);
+        if (!rows.length) continue;
+
+        const points = buildPortfolioDataPointsFromSeries(rows);
+        if (!points.length) continue;
+
+        AppState.dataPoints = points;
+        AppState.activeStockInterval = candidateInterval;
+        return true;
+    }
+
+    return false;
+}
+
 async function ensureStockIntervalForRange(range, options = {}) {
     if (!useIntradayCharts) return false;
-    if (AppState.currentView === 'portfolio') return false;
 
     const desiredInterval = getPreferredStockIntervalForRange(range);
     if (desiredInterval === AppState.activeStockInterval) return false;
 
-    const ticker = AppState.currentView;
-    const changed = await setStockDataForInterval(ticker, desiredInterval);
+    let changed = false;
+    if (AppState.currentView === 'portfolio') {
+        changed = await setPortfolioDataForInterval(desiredInterval);
+    } else {
+        const ticker = AppState.currentView;
+        changed = await setStockDataForInterval(ticker, desiredInterval);
+    }
     if (!changed) return false;
 
     if (options?.rebuildChart !== false) {
@@ -577,6 +724,11 @@ async function setRange(range, options = {}) {
         axis.setExtremes(rangeMin, rangeMax, true, false);
     }
 
+    if (range === 'all' && AppState.chart?.resetZoomButton) {
+        AppState.chart.resetZoomButton.destroy();
+        AppState.chart.resetZoomButton = null;
+    }
+
     updateRangeButtons(range);
 }
 
@@ -881,8 +1033,10 @@ function initBackButton() {
 }
 
 async function loadStock(ticker) {
-    AppState.activeRange = 'all';
-    const desiredInterval = getPreferredStockIntervalForRange('all');
+    const targetRange = AppState.currentView === 'portfolio'
+        ? 'all'
+        : (AppState.activeRange || 'all');
+    const desiredInterval = getPreferredStockIntervalForRange(targetRange);
     const hasData = await setStockDataForInterval(ticker, desiredInterval);
     if (!hasData) {
         console.error(`No price data available for ${ticker}`);
@@ -900,7 +1054,7 @@ async function loadStock(ticker) {
 
     if (AppState.chart) AppState.chart.destroy();
     createChart();
-    await setRange('all');
+    await setRange(targetRange);
 }
 
 async function backToPortfolio() {

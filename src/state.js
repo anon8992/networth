@@ -37,6 +37,7 @@ const AppState = {
     stockPrices: {},
     stockPriceDatesByTicker: {},
     stockSeriesCacheByTicker: {},
+    portfolioSeriesCacheByInterval: {},
 
     // holding logo paths 
     logosByTicker: {},

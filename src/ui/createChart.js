@@ -360,7 +360,7 @@ function createChart(options = {}) {
     const mainSeriesName = isStock ? AppState.currentView : 'Net worth';
     const initialNetWorthColor = AppState.lockednetWorthSeriesColor || COLORS.GREEN;
     const isIntradayInterval = ['fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(AppState.activeStockInterval);
-    const shouldShowIntradayTime = isStock && isIntradayInterval;
+    const shouldShowIntradayTime = isIntradayInterval;
     const shouldUseIntradayDayTicks = shouldShowIntradayTime && ['1w', '1m', '3m'].includes(AppState.activeRange);
     const intradayAxisBreaks = shouldShowIntradayTime
         ? buildIntradayAxisBreaks(AppState.dataPoints, AppState.activeStockInterval)
