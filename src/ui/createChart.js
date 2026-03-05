@@ -639,14 +639,12 @@ function calculateAndShowZoomStats(minDate, maxDate) {
 
     if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) return;
 
-    const startPoint = AppState.dataPoints[startIndex];
     const endPoint = AppState.dataPoints[endIndex];
-
-    const rangeTWRR = calculateTWRR(startIndex, endIndex);
-
-    const valChange = endPoint.netWorth - startPoint.netWorth;
-    const contributionsChange = endPoint.contribution - startPoint.contribution;
-    const rangeGain = valChange - contributionsChange;
+    const stats = typeof getDisplayChangeStats === 'function'
+        ? getDisplayChangeStats(startIndex, endIndex)
+        : null;
+    const rangeTWRR = stats?.twrr ?? calculateTWRR(startIndex, endIndex);
+    const rangeGain = stats?.gain ?? 0;
 
     const gainSign = rangeGain >= 0 ? '+' : '-';
     const twrrSign = rangeTWRR >= 0 ? '+' : '';

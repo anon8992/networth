@@ -55,6 +55,13 @@ const INTERVAL_FALLBACKS = {
     hourly: ['daily'],
     daily: []
 };
+const SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES = {
+    fivemin: 5,
+    quarterhourly: 15,
+    semihourly: 30,
+    hourly: 30
+};
+const MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN = 14 * 60;
 
 function normalizeChartStartDate(value) {
     if (typeof value !== 'string') return null;
@@ -98,6 +105,231 @@ function toDateStrUTC(epochMs) {
     const d = new Date(epochMs);
     if (!Number.isFinite(d.getTime())) return null;
     return d.toISOString().slice(0, 10);
+}
+
+function getDateStrMountain(epochMs) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Denver',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(epochMs);
+
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== 'literal') values[part.type] = part.value;
+    }
+
+    return `${values.year}-${values.month}-${values.day}`;
+}
+
+function getMountainHourMinute(epochMs) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Denver',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+    }).formatToParts(epochMs);
+
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== 'literal') values[part.type] = part.value;
+    }
+
+    const hour = Number(values.hour);
+    const minute = Number(values.minute);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return { hour, minute };
+}
+
+function getMountainDateParts(epochMs) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Denver',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(epochMs);
+
+    const values = {};
+    for (const part of parts) {
+        if (part.type !== 'literal') values[part.type] = part.value;
+    }
+
+    return {
+        year: Number(values.year),
+        month: Number(values.month),
+        day: Number(values.day)
+    };
+}
+
+function parseShortOffsetMinutes(text) {
+    const match = /^GMT([+-])(\d{1,2})(?::?(\d{2}))?$/.exec(String(text || '').trim());
+    if (!match) return null;
+    const sign = match[1] === '-' ? -1 : 1;
+    const hours = Number(match[2]);
+    const minutes = Number(match[3] || '0');
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    return sign * ((hours * 60) + minutes);
+}
+
+function getTimeZoneOffsetMinutes(timeZone, epochMs) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        timeZoneName: 'shortOffset',
+        hour: '2-digit'
+    }).formatToParts(epochMs);
+
+    const offsetText = parts.find((part) => part.type === 'timeZoneName')?.value;
+    return parseShortOffsetMinutes(offsetText);
+}
+
+function getMarketCloseMsForEpoch(epochMs) {
+    if (!Number.isFinite(epochMs)) return null;
+
+    const mountainDate = getMountainDateParts(epochMs);
+    if (!Number.isFinite(mountainDate.year) || !Number.isFinite(mountainDate.month) || !Number.isFinite(mountainDate.day)) {
+        return null;
+    }
+
+    const closeHour = Math.floor(MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN / 60);
+    const closeMinute = MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN % 60;
+    const utcGuessMs = Date.UTC(mountainDate.year, mountainDate.month - 1, mountainDate.day, closeHour, closeMinute, 0);
+    const offsetMinutes = getTimeZoneOffsetMinutes('America/Denver', utcGuessMs);
+    if (!Number.isFinite(offsetMinutes)) return null;
+
+    return utcGuessMs - (offsetMinutes * 60 * 1000);
+}
+
+function isIntradayStockInterval(interval) {
+    return ['fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(interval);
+}
+
+function getPreviousDailyClose(ticker, dateStr) {
+    if (typeof ticker !== 'string' || !ticker) return null;
+    if (typeof dateStr !== 'string' || !dateStr) return null;
+
+    const dates = AppState.stockPriceDatesByTicker?.[ticker];
+    const priceLookup = AppState.stockPrices?.[ticker];
+    if (!Array.isArray(dates) || !dates.length || !priceLookup) return null;
+
+    let lo = 0;
+    let hi = dates.length - 1;
+    let bestIdx = -1;
+
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midDate = dates[mid];
+
+        if (midDate < dateStr) {
+            bestIdx = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    if (bestIdx < 0) return null;
+    const price = priceLookup[dates[bestIdx]];
+    return (typeof price === 'number' && Number.isFinite(price)) ? price : null;
+}
+
+function shouldUsePreviousCloseForOneDayStockChange() {
+    if (sharedConfig.usePreviousCloseForOneDayStockChange !== true) return false;
+    if (AppState.currentView === 'portfolio') return false;
+    if (AppState.activeRange !== '1d') return false;
+    return isIntradayStockInterval(AppState.activeStockInterval);
+}
+
+function getDisplayChangeStats(startIndex, endIndex, options = {}) {
+    const startPoint = AppState.dataPoints[startIndex];
+    const endPoint = AppState.dataPoints[endIndex];
+    if (!startPoint || !endPoint) return null;
+
+    if (shouldUsePreviousCloseForOneDayStockChange()) {
+        const previousClose = getPreviousDailyClose(AppState.currentView, startPoint.dateStr);
+        if (typeof previousClose === 'number' && previousClose > 0) {
+            return {
+                gain: endPoint.netWorth - previousClose,
+                twrr: ((endPoint.netWorth / previousClose) - 1) * 100
+            };
+        }
+    }
+
+    if (options.mode === 'point' && startIndex === 0) {
+        return {
+            gain: endPoint.netGain,
+            twrr: endPoint.TWRR
+        };
+    }
+
+    const valChange = endPoint.netWorth - startPoint.netWorth;
+    const contributionsChange = endPoint.contribution - startPoint.contribution;
+    return {
+        gain: valChange - contributionsChange,
+        twrr: calculateTWRR(startIndex, endIndex)
+    };
+}
+
+function getSyntheticMarketCloseInfo(rows, interval) {
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    const appendMinutes = SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES[interval];
+    if (!Number.isFinite(appendMinutes)) return null;
+
+    const lastRow = rows[rows.length - 1];
+    const lastMs = lastRow?.ms;
+    if (!Number.isFinite(lastMs)) return null;
+
+    const closeMs = lastMs + (appendMinutes * 60 * 1000);
+    const lastHm = getMountainHourMinute(lastMs);
+    const closeHm = getMountainHourMinute(closeMs);
+    if (!lastHm || !closeHm) return null;
+
+    const sameMountainDate = getDateStrMountain(lastMs) === getDateStrMountain(closeMs);
+    const reachesMarketClose = closeHm.hour * 60 + closeHm.minute === MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN;
+    if (!sameMountainDate || !reachesMarketClose) return null;
+
+    return {
+        lastRow,
+        lastMs,
+        closeMs,
+        closeDateStr: toDateStrUTC(closeMs)
+    };
+}
+
+function maybeAppendSyntheticStockClose(rows, interval, ticker) {
+    const info = getSyntheticMarketCloseInfo(rows, interval);
+    if (!info?.closeDateStr) return rows;
+
+    const closePrice = AppState.stockPrices?.[ticker]?.[info.closeDateStr];
+    if (!(typeof closePrice === 'number' && Number.isFinite(closePrice))) return rows;
+
+    return [...rows, {
+        ...info.lastRow,
+        ms: info.closeMs,
+        dateStr: info.closeDateStr,
+        price: closePrice
+    }];
+}
+
+function maybeAppendSyntheticPortfolioClose(rows, interval) {
+    const info = getSyntheticMarketCloseInfo(rows, interval);
+    if (!info?.closeDateStr) return rows;
+
+    const portfolioIndex = AppState.portfolioIndexByDateStr?.[info.closeDateStr];
+    const closePoint = typeof portfolioIndex === 'number'
+        ? AppState.portfolioDataPoints?.[portfolioIndex]
+        : null;
+    if (!closePoint) return rows;
+    if (!(typeof closePoint.netWorth === 'number' && Number.isFinite(closePoint.netWorth))) return rows;
+
+    return [...rows, {
+        ...info.lastRow,
+        ms: info.closeMs,
+        dateStr: info.closeDateStr,
+        netWorth: closePoint.netWorth,
+        contribution: closePoint.contribution
+    }];
 }
 
 function normalizePriceSeriesRows(rows) {
@@ -169,7 +401,7 @@ async function loadStockSeriesForInterval(ticker, interval) {
     for (const filePath of candidatePaths) {
         try {
             const data = await extractData(filePath);
-            const rows = normalizePriceSeriesRows(data);
+            const rows = maybeAppendSyntheticStockClose(normalizePriceSeriesRows(data), interval, ticker);
             if (rows.length > 0) {
                 cache[interval] = rows;
                 return rows;
@@ -190,7 +422,7 @@ async function loadPortfolioSeriesForInterval(interval) {
     for (const filePath of candidatePaths) {
         try {
             const data = await extractData(filePath);
-            const rows = normalizePortfolioIntradaySeriesRows(data);
+            const rows = maybeAppendSyntheticPortfolioClose(normalizePortfolioIntradaySeriesRows(data), interval);
             if (rows.length > 0) {
                 AppState.portfolioSeriesCacheByInterval[interval] = rows;
                 return rows;
@@ -507,19 +739,9 @@ function updateHeader(hoverIndex, seriesName = 'Net worth') {
         if (foundIndex !== -1 && foundIndex < hoverIndex) startIndex = foundIndex;
     }
 
-    let gain, twrr;
-
-    if (startIndex === 0) {
-        gain = hoverPoint.netGain;
-        twrr = hoverPoint.TWRR;
-    } else {
-        const startPoint = AppState.dataPoints[startIndex];
-        const valChange = hoverPoint.netWorth - startPoint.netWorth;
-        const contributionsChange = hoverPoint.contribution - startPoint.contribution;
-
-        gain = valChange - contributionsChange;
-        twrr = calculateTWRR(startIndex, hoverIndex);
-    }
+    const stats = getDisplayChangeStats(startIndex, hoverIndex, { mode: 'point' });
+    const gain = stats?.gain ?? hoverPoint.netGain;
+    const twrr = stats?.twrr ?? hoverPoint.TWRR;
 
     const color = twrr < 0 ? COLORS.RED : COLORS.GREEN;
 
@@ -578,13 +800,10 @@ function resetHeader() {
         return;
     }
 
-    const startPoint = AppState.dataPoints[startIndex];
     const endPoint = AppState.dataPoints[endIndex];
-
-    const valChange = endPoint.netWorth - startPoint.netWorth;
-    const contributionsChange = endPoint.contribution - startPoint.contribution;
-    const gain = valChange - contributionsChange;
-    const twrr = calculateTWRR(startIndex, endIndex);
+    const stats = getDisplayChangeStats(startIndex, endIndex);
+    const gain = stats?.gain ?? 0;
+    const twrr = stats?.twrr ?? 0;
 
     const safeTwrr = Number.isFinite(twrr) ? twrr : 0;
     const newColor = safeTwrr < 0 ? COLORS.RED : COLORS.GREEN;
@@ -679,6 +898,12 @@ async function setRange(range, options = {}) {
     const endMs = AppState.dataPoints[AppState.dataPoints.length - 1]?.date;
     const firstDataMs = AppState.dataPoints[0]?.date;
     let startMs = getStartDate(range);
+    let rangeMax = Number.isFinite(endMs) ? endMs : null;
+
+    if (range === '1d' && isIntradayStockInterval(AppState.activeStockInterval)) {
+        const marketCloseMs = getMarketCloseMsForEpoch(endMs);
+        if (Number.isFinite(marketCloseMs)) rangeMax = marketCloseMs;
+    }
 
     if (Number.isFinite(chartStartCapMs)) {
         if (!Number.isFinite(startMs) || startMs < chartStartCapMs) {
@@ -695,7 +920,6 @@ async function setRange(range, options = {}) {
 
     const hasExplicitRangeMin = Number.isFinite(startMs) && Number.isFinite(endMs);
     const rangeMin = hasExplicitRangeMin ? Math.min(startMs, endMs) : null;
-    const rangeMax = Number.isFinite(endMs) ? endMs : null;
 
     // Range-button animation should only be the full initial draw, never an axis tween.
     if (shouldAnimateRangeSelection) {

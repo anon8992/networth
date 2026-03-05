@@ -2,8 +2,8 @@ name: Hourly YFinance Update
 
 on:
   schedule:
-    # Hourly on weekdays. Use a non-zero minute to avoid top-of-hour congestion.
-    - cron: "17 * * * 1-5"
+    # Every 10 minutes on weekdays. Offset from :00 to reduce top-of-hour congestion.
+    - cron: "7,17,27,37,47,57 * * * 1-5"
   workflow_dispatch:
 
 permissions:
@@ -46,12 +46,15 @@ jobs:
         run: python src/scripts/update_stock_prices_intraday_yfinance.py
 
       - name: Recalculate net worth outputs
-        run: node src/scripts/calculateNetWorth.js --force
+        run: |
+          node src/scripts/calculateNetWorth.js --force
+          node src/scripts/update_portfolio_intraday_networth.js
 
       - name: Commit and push if changed
         run: |
           if git diff --quiet -- \
             data/stockPriceHistory \
+            data/networthIntraday \
             data/networth.json \
             data/contributions.json; then
             echo "No data changes to commit."
@@ -63,6 +66,7 @@ jobs:
 
           git add \
             data/stockPriceHistory \
+            data/networthIntraday \
             data/networth.json \
             data/contributions.json
           git commit -m "chore: hourly yfinance price refresh"

@@ -198,7 +198,11 @@ def main() -> None:
             attempted_files += 1
             target = PRICES_DIR / cfg.folder / f"{ticker}.json"
             existing = read_rows(target)
-            fetched = fetch_intraday_rows(symbol, cfg.interval, cfg.period)
+            try:
+                fetched = fetch_intraday_rows(symbol, cfg.interval, cfg.period)
+            except Exception as exc:
+                log(f"  {cfg.folder}: error ({exc})")
+                continue
             if not fetched:
                 log(f"  {cfg.folder}: no data returned")
                 continue
