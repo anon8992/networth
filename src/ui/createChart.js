@@ -165,12 +165,171 @@ function findClosestDataPointIndex(targetDateMs) {
     return currDist < prevDist ? currIdx : prevIdx;
 }
 
+function getChartPointSourceIndex(point) {
+    const sourceIndex = point?.options?.custom?.sourceIndex ?? point?.custom?.sourceIndex;
+    if (Number.isFinite(sourceIndex)) return sourceIndex;
+    return Number.isFinite(point?.index) ? point.index : -1;
+}
+
+function findFirstDataPointIndexOnOrAfter(targetDateMs) {
+    const points = AppState.dataPoints;
+    if (!Array.isArray(points) || !points.length || !Number.isFinite(targetDateMs)) return -1;
+
+    let lo = 0;
+    let hi = points.length - 1;
+    let bestIndex = -1;
+
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midDate = points[mid]?.date;
+        if (!Number.isFinite(midDate)) {
+            lo = mid + 1;
+            continue;
+        }
+
+        if (midDate >= targetDateMs) {
+            bestIndex = mid;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    return bestIndex;
+}
+
+function findLastDataPointIndexOnOrBefore(targetDateMs) {
+    const points = AppState.dataPoints;
+    if (!Array.isArray(points) || !points.length || !Number.isFinite(targetDateMs)) return points.length - 1;
+
+    let lo = 0;
+    let hi = points.length - 1;
+    let bestIndex = -1;
+
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midDate = points[mid]?.date;
+        if (!Number.isFinite(midDate)) {
+            hi = mid - 1;
+            continue;
+        }
+
+        if (midDate <= targetDateMs) {
+            bestIndex = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    return bestIndex;
+}
+
+function shouldClipRenderedSeriesToRange(rangeMin) {
+    if (AppState.activeRange !== '1m') return false;
+    if (!INTERVAL_MS_BY_STOCK_INTERVAL[AppState.activeStockInterval]) return false;
+    return Number.isFinite(rangeMin);
+}
+
+function getRenderedPointWindow(rangeMin, rangeMax) {
+    const allPoints = Array.isArray(AppState.dataPoints) ? AppState.dataPoints : [];
+    if (!allPoints.length) {
+        return { points: [], startSourceIndex: 0 };
+    }
+
+    if (!shouldClipRenderedSeriesToRange(rangeMin)) {
+        return { points: allPoints, startSourceIndex: 0 };
+    }
+
+    const startSourceIndex = findFirstDataPointIndexOnOrAfter(rangeMin);
+    if (startSourceIndex < 0) {
+        return { points: allPoints, startSourceIndex: 0 };
+    }
+
+    let endSourceIndex = allPoints.length - 1;
+    if (Number.isFinite(rangeMax)) {
+        const lastVisibleIndex = findLastDataPointIndexOnOrBefore(rangeMax);
+        if (lastVisibleIndex >= startSourceIndex) endSourceIndex = lastVisibleIndex;
+    }
+
+    return {
+        points: allPoints.slice(startSourceIndex, endSourceIndex + 1),
+        startSourceIndex
+    };
+}
+
+function buildRenderedSeriesData(renderedPoints, startSourceIndex, valueSelector) {
+    return renderedPoints.map((point, offset) => ({
+        x: point.date,
+        y: valueSelector(point),
+        custom: {
+            sourceIndex: startSourceIndex + offset
+        }
+    }));
+}
+
+function buildIntradayDayTickPositioner(tickPositions) {
+    return function (min, max) {
+        const ticks = [];
+        for (let i = 0; i < tickPositions.length; i++) {
+            const tick = tickPositions[i];
+            if (tick >= min && tick <= max) ticks.push(tick);
+        }
+        const cappedTicks = downsampleTickPositions(ticks, 7);
+        if (cappedTicks.length) return cappedTicks;
+        if (!ticks.length) {
+            if (Number.isFinite(min)) ticks.push(min);
+            if (Number.isFinite(max) && max !== min) ticks.push(max);
+        }
+        return ticks;
+    };
+}
+
+function syncChartRenderedSeriesToRange(rangeMin, rangeMax) {
+    if (!AppState.chart || !AppState.netWorthSeries) return;
+
+    const renderedWindow = getRenderedPointWindow(rangeMin, rangeMax);
+    const renderedPoints = renderedWindow.points;
+    const startSourceIndex = renderedWindow.startSourceIndex;
+    const netData = buildRenderedSeriesData(renderedPoints, startSourceIndex, (point) => point.netWorth);
+    const contributionsData = buildRenderedSeriesData(renderedPoints, startSourceIndex, (point) => point.contribution);
+    const shouldShowIntradayTime = Boolean(INTERVAL_MS_BY_STOCK_INTERVAL[AppState.activeStockInterval]);
+    const shouldUseIntradayDayTicks = shouldShowIntradayTime && ['1w', '1m', '3m'].includes(AppState.activeRange);
+    const intradayAxisBreaks = shouldShowIntradayTime
+        ? buildIntradayAxisBreaks(renderedPoints, AppState.activeStockInterval)
+        : [];
+    const intradayDayTickPositions = shouldUseIntradayDayTicks
+        ? buildIntradayDayTickPositions(renderedPoints)
+        : [];
+
+    AppState.netWorthSeries.setData(netData, false, false, false);
+
+    const contributionsSeries = AppState.chart.series.find((series) => series.name === 'Contributions');
+    if (contributionsSeries) {
+        contributionsSeries.setData(contributionsData, false, false, false);
+    }
+
+    const axis = AppState.chart.xAxis?.[0];
+    if (axis) {
+        axis.update({
+            breaks: intradayAxisBreaks,
+            tickAmount: shouldUseIntradayDayTicks ? undefined : 5,
+            tickPositioner: shouldUseIntradayDayTicks
+                ? buildIntradayDayTickPositioner(intradayDayTickPositions)
+                : undefined
+        }, false);
+    }
+
+    AppState.chart.redraw(false);
+    queueHoverResyncFromLastPointer();
+}
+
 function syncHoverFromPointerPosition(pointerState) {
     if (!pointerState || !AppState.chart || !AppState.dataPoints.length) return;
 
     const chartRef = AppState.chart;
     if (chartRef.hoverPoint) {
-        _lastFallbackHoverIndex = chartRef.hoverPoint.index;
+        _lastFallbackHoverIndex = getChartPointSourceIndex(chartRef.hoverPoint);
         return;
     }
     const xAxis = chartRef.xAxis?.[0];
@@ -198,7 +357,7 @@ function syncHoverFromPointerPosition(pointerState) {
         if (!samePointHovered && typeof nearestPoint.onMouseOver === 'function') {
             nearestPoint.onMouseOver();
         }
-        _lastFallbackHoverIndex = nearestPoint.index;
+        _lastFallbackHoverIndex = getChartPointSourceIndex(nearestPoint);
         return;
     }
 
@@ -207,7 +366,7 @@ function syncHoverFromPointerPosition(pointerState) {
     if (fallbackIndex < 0 || fallbackIndex === _lastFallbackHoverIndex) return;
     _lastFallbackHoverIndex = fallbackIndex;
 
-    const fallbackPoint = AppState.netWorthSeries?.points?.find?.((p) => p?.index === fallbackIndex);
+    const fallbackPoint = AppState.netWorthSeries?.points?.find?.((point) => getChartPointSourceIndex(point) === fallbackIndex);
     if (fallbackPoint && typeof fallbackPoint.onMouseOver === 'function') {
         fallbackPoint.onMouseOver();
         return;
@@ -220,9 +379,8 @@ function syncHoverFromPointerPosition(pointerState) {
         updateHeader(fallbackIndex, defaultSeriesName);
     }
 
-    if (AppState.currentView !== 'portfolio' && typeof window.updateSelectedHoldingMetricsByDateStr === 'function') {
-        const dateStr = AppState.dataPoints[fallbackIndex]?.dateStr;
-        window.updateSelectedHoldingMetricsByDateStr(dateStr);
+    if (AppState.currentView !== 'portfolio' && typeof window.updateSelectedHoldingMetricsByDataIndex === 'function') {
+        window.updateSelectedHoldingMetricsByDataIndex(fallbackIndex);
     }
 }
 
@@ -237,7 +395,7 @@ function queuePointerHoverSync(event) {
     };
 
     if (AppState.chart.hoverPoint) {
-        _lastFallbackHoverIndex = AppState.chart.hoverPoint.index;
+        _lastFallbackHoverIndex = getChartPointSourceIndex(AppState.chart.hoverPoint);
         _pendingPointerHover = null;
         return;
     }
@@ -345,8 +503,11 @@ function createChart(options = {}) {
     const initialXAxisMax = Number.isFinite(options?.initialXAxisMax) ? options.initialXAxisMax : undefined;
     _suppressAutoHeaderResetUntilMs = animateSeries ? (Date.now() + SERIES_ANIMATION_DURATION_MS + 40) : 0;
 
-    const netData = AppState.dataPoints.map(point => [point.date, point.netWorth]);
-    const contributionsData = AppState.dataPoints.map(point => [point.date, point.contribution]);
+    const renderedWindow = getRenderedPointWindow(initialXAxisMin, initialXAxisMax);
+    const renderedPoints = renderedWindow.points;
+    const startSourceIndex = renderedWindow.startSourceIndex;
+    const netData = buildRenderedSeriesData(renderedPoints, startSourceIndex, (point) => point.netWorth);
+    const contributionsData = buildRenderedSeriesData(renderedPoints, startSourceIndex, (point) => point.contribution);
     const forceYAxisZero = globalThis.FolioScoutConfig?.chartYAxisStartsAtZero === true;
     const yAxisConfig = {
         gridLineWidth: 0,
@@ -363,10 +524,10 @@ function createChart(options = {}) {
     const shouldShowIntradayTime = isIntradayInterval;
     const shouldUseIntradayDayTicks = shouldShowIntradayTime && ['1w', '1m', '3m'].includes(AppState.activeRange);
     const intradayAxisBreaks = shouldShowIntradayTime
-        ? buildIntradayAxisBreaks(AppState.dataPoints, AppState.activeStockInterval)
+        ? buildIntradayAxisBreaks(renderedPoints, AppState.activeStockInterval)
         : [];
     const intradayDayTickPositions = shouldUseIntradayDayTicks
-        ? buildIntradayDayTickPositions(AppState.dataPoints)
+        ? buildIntradayDayTickPositions(renderedPoints)
         : [];
     const xAxisDateTimeLabelFormats = shouldShowIntradayTime
         ? {
@@ -465,20 +626,7 @@ function createChart(options = {}) {
             units: xAxisUnits,
             breaks: intradayAxisBreaks,
             tickPositioner: shouldUseIntradayDayTicks
-                ? function (min, max) {
-                    const ticks = [];
-                    for (let i = 0; i < intradayDayTickPositions.length; i++) {
-                        const tick = intradayDayTickPositions[i];
-                        if (tick >= min && tick <= max) ticks.push(tick);
-                    }
-                    const cappedTicks = downsampleTickPositions(ticks, 7);
-                    if (cappedTicks.length) return cappedTicks;
-                    if (!ticks.length) {
-                        if (Number.isFinite(min)) ticks.push(min);
-                        if (Number.isFinite(max) && max !== min) ticks.push(max);
-                    }
-                    return ticks;
-                }
+                ? buildIntradayDayTickPositioner(intradayDayTickPositions)
                 : undefined,
             lineColor: '#999',
             crosshair: {
@@ -528,11 +676,11 @@ function createChart(options = {}) {
                                 clearTimeout(resetHeadlineTimeoutId);
                                 resetHeadlineTimeoutId = null;
                             }
-                            _lastFallbackHoverIndex = this.index;
-                            updateHeader(this.index, this.series.name);
-                            if (AppState.currentView !== 'portfolio' && typeof window.updateSelectedHoldingMetricsByDateStr === 'function') {
-                                const dateStr = AppState.dataPoints[this.index]?.dateStr;
-                                window.updateSelectedHoldingMetricsByDateStr(dateStr);
+                            const sourceIndex = getChartPointSourceIndex(this);
+                            _lastFallbackHoverIndex = sourceIndex;
+                            updateHeader(sourceIndex, this.series.name);
+                            if (AppState.currentView !== 'portfolio' && typeof window.updateSelectedHoldingMetricsByDataIndex === 'function') {
+                                window.updateSelectedHoldingMetricsByDataIndex(sourceIndex);
                             }
                         },
                         mouseOut: function() {
@@ -592,6 +740,8 @@ function createChart(options = {}) {
     initRangeSelector();
     updateRangeButtons(AppState.activeRange || 'all');
 }
+
+window.syncChartRenderedSeriesToRange = syncChartRenderedSeriesToRange;
 
 function initHoldingsPanelPlotSync(chartRef) {
     const holdingsPanel = document.getElementById('holdingsPanel');

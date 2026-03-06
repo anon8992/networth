@@ -78,3 +78,22 @@ function calculateTotalReturnPercent(position, currentPrice) {
     const totalProceeds = realizedProceeds + currentValue;
     return ((totalProceeds - totalCost) / totalCost) * 100;
 }
+
+function calculateTotalReturnDollar(position, currentPrice) {
+    if (!position) return null;
+
+    const shares = position.shares || 0;
+    const costBasis = position.costBasis || 0;
+    const realizedCost = position.realizedCost || 0;
+    const realizedProceeds = position.realizedProceeds || 0;
+
+    const totalCost = realizedCost + costBasis;
+    if (!(totalCost > 0)) return null;
+
+    const hasShares = shares > 0.000001;
+    const currentValue = hasShares ? shares * currentPrice : 0;
+    if (hasShares && !(currentPrice > 0)) return null;
+
+    const totalProceeds = realizedProceeds + currentValue;
+    return totalProceeds - totalCost;
+}

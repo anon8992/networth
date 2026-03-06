@@ -12,6 +12,28 @@ function formatCurrency(amount) {
     return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+function formatSignedCurrency(amount) {
+    const n = Number(amount);
+    if (!Number.isFinite(n)) return '';
+    if (n === 0) return '$0.00';
+
+    const sign = n > 0 ? '+' : '-';
+    const absValue = Math.abs(n);
+    if (absValue < 0.01) return `${sign}<$0.01`;
+    return `${sign}$${absValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatSignedCurrencyCompact(amount) {
+    const n = Number(amount);
+    if (!Number.isFinite(n)) return '';
+    if (n === 0) return '$0';
+
+    const sign = n > 0 ? '+' : '-';
+    const absValue = Math.abs(n);
+    if (absValue < 0.5) return `${sign}<$1`;
+    return `${sign}$${Math.round(absValue).toLocaleString('en-US')}`;
+}
+
 function formatWeightPercent(percent) {
     const n = Number(percent);
     if (!Number.isFinite(n)) return '0.0%';

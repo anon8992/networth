@@ -61,7 +61,17 @@ const SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES = {
     semihourly: 30,
     hourly: 30
 };
-const MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN = 14 * 60;
+const DEFAULT_MARKET_SESSION = Object.freeze({
+    timeZone: 'America/Denver',
+    closeTotalMinutes: 14 * 60
+});
+const MARKET_SESSION_BY_TICKER_SUFFIX = Object.freeze([
+    {
+        suffix: '.PA',
+        timeZone: 'Europe/Paris',
+        closeTotalMinutes: 17 * 60 + 30
+    }
+]);
 
 function normalizeChartStartDate(value) {
     if (typeof value !== 'string') return null;
@@ -107,9 +117,9 @@ function toDateStrUTC(epochMs) {
     return d.toISOString().slice(0, 10);
 }
 
-function getDateStrMountain(epochMs) {
+function getDateStrInTimeZone(epochMs, timeZone) {
     const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Denver',
+        timeZone,
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
@@ -123,9 +133,13 @@ function getDateStrMountain(epochMs) {
     return `${values.year}-${values.month}-${values.day}`;
 }
 
-function getMountainHourMinute(epochMs) {
+function getDateStrMountain(epochMs) {
+    return getDateStrInTimeZone(epochMs, 'America/Denver');
+}
+
+function getHourMinuteInTimeZone(epochMs, timeZone) {
     const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Denver',
+        timeZone,
         hour: '2-digit',
         minute: '2-digit',
         hour12: false
@@ -142,9 +156,13 @@ function getMountainHourMinute(epochMs) {
     return { hour, minute };
 }
 
-function getMountainDateParts(epochMs) {
+function getMountainHourMinute(epochMs) {
+    return getHourMinuteInTimeZone(epochMs, 'America/Denver');
+}
+
+function getDatePartsInTimeZone(epochMs, timeZone) {
     const parts = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Denver',
+        timeZone,
         year: 'numeric',
         month: '2-digit',
         day: '2-digit'
@@ -160,6 +178,10 @@ function getMountainDateParts(epochMs) {
         month: Number(values.month),
         day: Number(values.day)
     };
+}
+
+function getMountainDateParts(epochMs) {
+    return getDatePartsInTimeZone(epochMs, 'America/Denver');
 }
 
 function parseShortOffsetMinutes(text) {
@@ -183,18 +205,32 @@ function getTimeZoneOffsetMinutes(timeZone, epochMs) {
     return parseShortOffsetMinutes(offsetText);
 }
 
-function getMarketCloseMsForEpoch(epochMs) {
+function getMarketSessionForTicker(ticker) {
+    if (typeof ticker !== 'string' || !ticker) return DEFAULT_MARKET_SESSION;
+
+    const upperTicker = ticker.trim().toUpperCase();
+    for (const session of MARKET_SESSION_BY_TICKER_SUFFIX) {
+        if (upperTicker.endsWith(session.suffix)) {
+            return session;
+        }
+    }
+
+    return DEFAULT_MARKET_SESSION;
+}
+
+function getMarketCloseMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSION) {
     if (!Number.isFinite(epochMs)) return null;
 
-    const mountainDate = getMountainDateParts(epochMs);
-    if (!Number.isFinite(mountainDate.year) || !Number.isFinite(mountainDate.month) || !Number.isFinite(mountainDate.day)) {
+    const resolvedMarketSession = marketSession || DEFAULT_MARKET_SESSION;
+    const marketDate = getDatePartsInTimeZone(epochMs, resolvedMarketSession.timeZone);
+    if (!Number.isFinite(marketDate.year) || !Number.isFinite(marketDate.month) || !Number.isFinite(marketDate.day)) {
         return null;
     }
 
-    const closeHour = Math.floor(MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN / 60);
-    const closeMinute = MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN % 60;
-    const utcGuessMs = Date.UTC(mountainDate.year, mountainDate.month - 1, mountainDate.day, closeHour, closeMinute, 0);
-    const offsetMinutes = getTimeZoneOffsetMinutes('America/Denver', utcGuessMs);
+    const closeHour = Math.floor(resolvedMarketSession.closeTotalMinutes / 60);
+    const closeMinute = resolvedMarketSession.closeTotalMinutes % 60;
+    const utcGuessMs = Date.UTC(marketDate.year, marketDate.month - 1, marketDate.day, closeHour, closeMinute, 0);
+    const offsetMinutes = getTimeZoneOffsetMinutes(resolvedMarketSession.timeZone, utcGuessMs);
     if (!Number.isFinite(offsetMinutes)) return null;
 
     return utcGuessMs - (offsetMinutes * 60 * 1000);
@@ -202,6 +238,52 @@ function getMarketCloseMsForEpoch(epochMs) {
 
 function isIntradayStockInterval(interval) {
     return ['fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(interval);
+}
+
+function getFirstDataPointMsOnOrAfter(targetMs) {
+    if (!Number.isFinite(targetMs) || !Array.isArray(AppState.dataPoints) || AppState.dataPoints.length === 0) {
+        return null;
+    }
+
+    let lo = 0;
+    let hi = AppState.dataPoints.length - 1;
+    let bestIdx = -1;
+
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midMs = AppState.dataPoints[mid]?.date;
+        if (!Number.isFinite(midMs)) {
+            lo = mid + 1;
+            continue;
+        }
+
+        if (midMs >= targetMs) {
+            bestIdx = mid;
+            hi = mid - 1;
+        } else {
+            lo = mid + 1;
+        }
+    }
+
+    return bestIdx >= 0 ? AppState.dataPoints[bestIdx]?.date ?? null : null;
+}
+
+function getFirstDataPointMsAtMountainDayBoundaryOnOrAfter(targetMs) {
+    const firstPointMs = getFirstDataPointMsOnOrAfter(targetMs);
+    if (!Number.isFinite(firstPointMs)) return null;
+
+    const targetHm = getMountainHourMinute(targetMs);
+    const targetDay = getDateStrMountain(targetMs);
+    const isSessionStart = targetHm && ((targetHm.hour * 60 + targetHm.minute) === (7 * 60 + 30));
+    if (isSessionStart) return firstPointMs;
+
+    for (let i = 0; i < AppState.dataPoints.length; i++) {
+        const pointMs = AppState.dataPoints[i]?.date;
+        if (!Number.isFinite(pointMs) || pointMs < firstPointMs) continue;
+        if (getDateStrMountain(pointMs) > targetDay) return pointMs;
+    }
+
+    return firstPointMs;
 }
 
 function getPreviousDailyClose(ticker, dateStr) {
@@ -255,7 +337,11 @@ function getDisplayChangeStats(startIndex, endIndex, options = {}) {
         }
     }
 
-    if (options.mode === 'point' && startIndex === 0) {
+    const isPortfolioIntradayRange =
+        AppState.currentView === 'portfolio' &&
+        isIntradayStockInterval(AppState.activeStockInterval);
+
+    if (options.mode === 'point' && startIndex === 0 && !isPortfolioIntradayRange) {
         return {
             gain: endPoint.netGain,
             twrr: endPoint.TWRR
@@ -270,7 +356,7 @@ function getDisplayChangeStats(startIndex, endIndex, options = {}) {
     };
 }
 
-function getSyntheticMarketCloseInfo(rows, interval) {
+function getSyntheticMarketCloseInfo(rows, interval, marketSession = DEFAULT_MARKET_SESSION) {
     if (!Array.isArray(rows) || rows.length === 0) return null;
 
     const appendMinutes = SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES[interval];
@@ -280,14 +366,15 @@ function getSyntheticMarketCloseInfo(rows, interval) {
     const lastMs = lastRow?.ms;
     if (!Number.isFinite(lastMs)) return null;
 
+    const resolvedMarketSession = marketSession || DEFAULT_MARKET_SESSION;
     const closeMs = lastMs + (appendMinutes * 60 * 1000);
-    const lastHm = getMountainHourMinute(lastMs);
-    const closeHm = getMountainHourMinute(closeMs);
+    const lastHm = getHourMinuteInTimeZone(lastMs, resolvedMarketSession.timeZone);
+    const closeHm = getHourMinuteInTimeZone(closeMs, resolvedMarketSession.timeZone);
     if (!lastHm || !closeHm) return null;
 
-    const sameMountainDate = getDateStrMountain(lastMs) === getDateStrMountain(closeMs);
-    const reachesMarketClose = closeHm.hour * 60 + closeHm.minute === MARKET_CLOSE_TOTAL_MINUTES_MOUNTAIN;
-    if (!sameMountainDate || !reachesMarketClose) return null;
+    const sameSessionDate = getDateStrInTimeZone(lastMs, resolvedMarketSession.timeZone) === getDateStrInTimeZone(closeMs, resolvedMarketSession.timeZone);
+    const reachesMarketClose = closeHm.hour * 60 + closeHm.minute === resolvedMarketSession.closeTotalMinutes;
+    if (!sameSessionDate || !reachesMarketClose) return null;
 
     return {
         lastRow,
@@ -298,7 +385,7 @@ function getSyntheticMarketCloseInfo(rows, interval) {
 }
 
 function maybeAppendSyntheticStockClose(rows, interval, ticker) {
-    const info = getSyntheticMarketCloseInfo(rows, interval);
+    const info = getSyntheticMarketCloseInfo(rows, interval, getMarketSessionForTicker(ticker));
     if (!info?.closeDateStr) return rows;
 
     const closePrice = AppState.stockPrices?.[ticker]?.[info.closeDateStr];
@@ -313,7 +400,7 @@ function maybeAppendSyntheticStockClose(rows, interval, ticker) {
 }
 
 function maybeAppendSyntheticPortfolioClose(rows, interval) {
-    const info = getSyntheticMarketCloseInfo(rows, interval);
+    const info = getSyntheticMarketCloseInfo(rows, interval, DEFAULT_MARKET_SESSION);
     if (!info?.closeDateStr) return rows;
 
     const portfolioIndex = AppState.portfolioIndexByDateStr?.[info.closeDateStr];
@@ -645,15 +732,27 @@ async function prepareData() {
         const valueByTicker = {};
         const weightByTicker = {};
         const returnPercentByTicker = {};
+        const returnDollarByTicker = {};
+        const dailyChangePercentByTicker = {};
+        const dailyChangeDollarByTicker = {};
 
         let totalHoldingsValue = 0;
         for (const ticker of AppState.portfolioTickers) {
             const position = positionsByTicker[ticker];
             const price = getStockPrice(ticker, dateStr);
             const value = position?.shares > 0.0001 ? position.shares * price : 0;
+            const previousClose = getPreviousDailyClose(ticker, dateStr);
+            const shares = position?.shares || 0;
             valueByTicker[ticker] = value;
             totalHoldingsValue += value;
             returnPercentByTicker[ticker] = calculateTotalReturnPercent(position, price);
+            returnDollarByTicker[ticker] = calculateTotalReturnDollar(position, price);
+            dailyChangePercentByTicker[ticker] = (shares > 0.0001 && previousClose > 0)
+                ? (((price / previousClose) - 1) * 100)
+                : null;
+            dailyChangeDollarByTicker[ticker] = (shares > 0.0001 && previousClose > 0)
+                ? (shares * (price - previousClose))
+                : null;
         }
         for (const ticker of AppState.portfolioTickers) {
             const value = valueByTicker[ticker] || 0;
@@ -689,24 +788,30 @@ async function prepareData() {
             dateStr: dateStr,
             holdingsValueByTicker: valueByTicker,
             holdingsWeightByTicker: weightByTicker,
-            returnPercentByTicker: returnPercentByTicker
+            returnPercentByTicker: returnPercentByTicker,
+            returnDollarByTicker: returnDollarByTicker,
+            dailyChangePercentByTicker: dailyChangePercentByTicker,
+            dailyChangeDollarByTicker: dailyChangeDollarByTicker
         };
         AppState.dataPoints.push(point);
     }
 
-    const lastDateStr = netWorthData.at(-1)?.[0];
     AppState.latestReturnPercentByTicker = {};
-    if (lastDateStr) {
-        for (const ticker in positionsByTicker) {
-            const position = positionsByTicker[ticker];
-            const currentPrice = getStockPrice(ticker, lastDateStr);
-            AppState.latestReturnPercentByTicker[ticker] = calculateTotalReturnPercent(position, currentPrice);
-        }
-    }
+    AppState.latestReturnDollarByTicker = {};
+    AppState.latestDailyChangePercentByTicker = {};
+    AppState.latestDailyChangeDollarByTicker = {};
 
     AppState.portfolioIndexByDateStr = {};
     for (let i = 0; i < AppState.dataPoints.length; i++) {
         AppState.portfolioIndexByDateStr[AppState.dataPoints[i].dateStr] = i;
+    }
+
+    const latestPortfolioPoint = AppState.dataPoints[AppState.dataPoints.length - 1];
+    if (latestPortfolioPoint) {
+        AppState.latestReturnPercentByTicker = { ...(latestPortfolioPoint.returnPercentByTicker || {}) };
+        AppState.latestReturnDollarByTicker = { ...(latestPortfolioPoint.returnDollarByTicker || {}) };
+        AppState.latestDailyChangePercentByTicker = { ...(latestPortfolioPoint.dailyChangePercentByTicker || {}) };
+        AppState.latestDailyChangeDollarByTicker = { ...(latestPortfolioPoint.dailyChangeDollarByTicker || {}) };
     }
 }
 
@@ -901,7 +1006,10 @@ async function setRange(range, options = {}) {
     let rangeMax = Number.isFinite(endMs) ? endMs : null;
 
     if (range === '1d' && isIntradayStockInterval(AppState.activeStockInterval)) {
-        const marketCloseMs = getMarketCloseMsForEpoch(endMs);
+        const marketSession = AppState.currentView === 'portfolio'
+            ? DEFAULT_MARKET_SESSION
+            : getMarketSessionForTicker(AppState.currentView);
+        const marketCloseMs = getMarketCloseMsForEpoch(endMs, marketSession);
         if (Number.isFinite(marketCloseMs)) rangeMax = marketCloseMs;
     }
 
@@ -909,6 +1017,11 @@ async function setRange(range, options = {}) {
         if (!Number.isFinite(startMs) || startMs < chartStartCapMs) {
             startMs = chartStartCapMs;
         }
+    }
+
+    if (range === '1m' && isIntradayStockInterval(AppState.activeStockInterval)) {
+        const snappedStartMs = getFirstDataPointMsAtMountainDayBoundaryOnOrAfter(startMs);
+        if (Number.isFinite(snappedStartMs)) startMs = snappedStartMs;
     }
 
     // Never start before the actual first point; avoids large empty pre-listing areas.
@@ -940,6 +1053,10 @@ async function setRange(range, options = {}) {
     // to avoid blended/morphing look from stale hover zones.
     if (fromRangeSelector && !shouldAnimateRangeSelection && typeof clearNetWorthSeriesSplit === 'function') {
         clearNetWorthSeriesSplit();
+    }
+
+    if (typeof window.syncChartRenderedSeriesToRange === 'function') {
+        window.syncChartRenderedSeriesToRange(rangeMin, rangeMax);
     }
 
     if (!Number.isFinite(rangeMin)) {
@@ -1017,6 +1134,251 @@ function initRangeSelector() {
     });
 }
 
+const HOLDINGS_SIDEBAR_SETTINGS_STORAGE_KEY = 'folioscout.holdingsSidebarSettings';
+const DEFAULT_HOLDINGS_SIDEBAR_SETTINGS = Object.freeze({
+    changeMode: 'today',
+    showDollar: true,
+    showPercent: true
+});
+
+function normalizeHoldingsSidebarSettings(value) {
+    const normalized = {
+        changeMode: value?.changeMode === 'alltime' ? 'alltime' : 'today',
+        showDollar: value?.showDollar !== false,
+        showPercent: value?.showPercent !== false
+    };
+
+    if (!normalized.showDollar && !normalized.showPercent) {
+        normalized.showPercent = true;
+    }
+
+    return normalized;
+}
+
+function loadHoldingsSidebarSettings() {
+    try {
+        const raw = localStorage.getItem(HOLDINGS_SIDEBAR_SETTINGS_STORAGE_KEY);
+        if (!raw) return { ...DEFAULT_HOLDINGS_SIDEBAR_SETTINGS };
+        return normalizeHoldingsSidebarSettings(JSON.parse(raw));
+    } catch {
+        return { ...DEFAULT_HOLDINGS_SIDEBAR_SETTINGS };
+    }
+}
+
+function saveHoldingsSidebarSettings() {
+    try {
+        localStorage.setItem(
+            HOLDINGS_SIDEBAR_SETTINGS_STORAGE_KEY,
+            JSON.stringify(AppState.holdingsSidebarSettings)
+        );
+    } catch {
+        // localStorage is best-effort only
+    }
+}
+
+function syncHoldingsSettingsUI() {
+    if (UI.holdingsSettingsButton) {
+        UI.holdingsSettingsButton.setAttribute('aria-expanded', UI.holdingsSettingsPanel?.hidden ? 'false' : 'true');
+    }
+    if (!UI.holdingsSettingsPanel) return;
+
+    const { changeMode, showDollar, showPercent } = AppState.holdingsSidebarSettings;
+    const changeModeInputs = UI.holdingsSettingsPanel.querySelectorAll('input[name="holdingsChangeMode"]');
+    for (const input of changeModeInputs) {
+        input.checked = input.value === changeMode;
+    }
+
+    const dollarInput = UI.holdingsSettingsPanel.querySelector('input[name="holdingsMetricDollar"]');
+    const percentInput = UI.holdingsSettingsPanel.querySelector('input[name="holdingsMetricPercent"]');
+    if (dollarInput) dollarInput.checked = showDollar;
+    if (percentInput) percentInput.checked = showPercent;
+}
+
+function applyHoldingsSidebarSettings(nextSettings) {
+    AppState.holdingsSidebarSettings = normalizeHoldingsSidebarSettings(nextSettings);
+    saveHoldingsSidebarSettings();
+    syncHoldingsSettingsUI();
+
+    if (AppState.portfolioDataPoints.length > 0) {
+        updateHoldingsWeights(AppState.portfolioDataPoints.length - 1);
+    } else {
+        updateHoldingsWeights(null);
+    }
+
+    if (AppState.currentView !== 'portfolio' && typeof window.resetSelectedHoldingMetricsToLatest === 'function') {
+        window.resetSelectedHoldingMetricsToLatest();
+    }
+}
+
+function initHoldingsSettings() {
+    if (AppState.holdingsSettingsInitialized) return;
+    AppState.holdingsSettingsInitialized = true;
+    AppState.holdingsSidebarSettings = loadHoldingsSidebarSettings();
+    syncHoldingsSettingsUI();
+
+    if (UI.holdingsSettingsButton && UI.holdingsSettingsPanel) {
+        UI.holdingsSettingsButton.addEventListener('click', (event) => {
+            event.stopPropagation();
+            UI.holdingsSettingsPanel.hidden = !UI.holdingsSettingsPanel.hidden;
+            syncHoldingsSettingsUI();
+        });
+    }
+
+    if (UI.holdingsSettingsPanel) {
+        UI.holdingsSettingsPanel.addEventListener('click', (event) => {
+            event.stopPropagation();
+        });
+
+        UI.holdingsSettingsPanel.addEventListener('change', (event) => {
+            const target = event.target;
+            if (!(target instanceof HTMLInputElement)) return;
+
+            const current = AppState.holdingsSidebarSettings;
+            if (target.name === 'holdingsChangeMode') {
+                applyHoldingsSidebarSettings({
+                    ...current,
+                    changeMode: target.value === 'alltime' ? 'alltime' : 'today'
+                });
+                return;
+            }
+
+            if (target.name === 'holdingsMetricDollar' || target.name === 'holdingsMetricPercent') {
+                const nextSettings = {
+                    ...current,
+                    showDollar: target.name === 'holdingsMetricDollar' ? target.checked : current.showDollar,
+                    showPercent: target.name === 'holdingsMetricPercent' ? target.checked : current.showPercent
+                };
+                applyHoldingsSidebarSettings(nextSettings);
+            }
+        });
+    }
+
+    document.addEventListener('click', (event) => {
+        if (!UI.holdingsSettingsPanel || UI.holdingsSettingsPanel.hidden) return;
+        if (UI.holdingsSettingsPanel.contains(event.target) || UI.holdingsSettingsButton?.contains(event.target)) return;
+        UI.holdingsSettingsPanel.hidden = true;
+        syncHoldingsSettingsUI();
+    });
+}
+
+function getLatestPortfolioPoint() {
+    for (let i = AppState.portfolioDataPoints.length - 1; i >= 0; i--) {
+        const point = AppState.portfolioDataPoints[i];
+        if (point?.holdingsValueByTicker && point?.holdingsWeightByTicker) return point;
+    }
+    return null;
+}
+
+function getHoldingMetricSnapshot(ticker, point) {
+    const settings = AppState.holdingsSidebarSettings || DEFAULT_HOLDINGS_SIDEBAR_SETTINGS;
+    const metricDollarByTicker = settings.changeMode === 'today'
+        ? point?.dailyChangeDollarByTicker
+        : point?.returnDollarByTicker;
+    const metricPercentByTicker = settings.changeMode === 'today'
+        ? point?.dailyChangePercentByTicker
+        : point?.returnPercentByTicker;
+
+    return {
+        dollar: metricDollarByTicker?.[ticker],
+        percent: metricPercentByTicker?.[ticker]
+    };
+}
+
+function getSelectedHoldingMetricsForDataIndex(index) {
+    const ticker = AppState.currentView;
+    if (!ticker || ticker === 'portfolio') return null;
+
+    const hoveredPoint = typeof index === 'number' ? AppState.dataPoints[index] : null;
+    if (!hoveredPoint) return null;
+
+    const portfolioIndex = AppState.portfolioIndexByDateStr?.[hoveredPoint.dateStr];
+    const portfolioPoint = typeof portfolioIndex === 'number'
+        ? AppState.portfolioDataPoints?.[portfolioIndex]
+        : null;
+    if (!portfolioPoint) return null;
+
+    const baseValue = portfolioPoint.holdingsValueByTicker?.[ticker] ?? 0;
+    const dailyClosePrice = getStockPrice(ticker, hoveredPoint.dateStr);
+    const hoveredPrice = hoveredPoint.netWorth;
+    const shares = (dailyClosePrice > 0 && baseValue > 0) ? (baseValue / dailyClosePrice) : 0;
+    const hoveredValue = shares > 0 ? shares * hoveredPrice : baseValue;
+
+    const totalPortfolioValue = Object.values(portfolioPoint.holdingsValueByTicker || {}).reduce((sum, value) => {
+        return sum + (Number.isFinite(value) ? value : 0);
+    }, 0);
+    const adjustedTotalValue = Math.max(0, totalPortfolioValue - baseValue + hoveredValue);
+    const weightPercent = adjustedTotalValue > 0 ? (hoveredValue / adjustedTotalValue) * 100 : 0;
+
+    const settings = AppState.holdingsSidebarSettings || DEFAULT_HOLDINGS_SIDEBAR_SETTINGS;
+    if (settings.changeMode === 'today') {
+        const previousClose = getPreviousDailyClose(ticker, hoveredPoint.dateStr);
+        const metricDollar = (shares > 0 && previousClose > 0)
+            ? shares * (hoveredPrice - previousClose)
+            : null;
+        const metricPercent = (previousClose > 0)
+            ? (((hoveredPrice / previousClose) - 1) * 100)
+            : null;
+        return {
+            weightPercent,
+            value: hoveredValue,
+            metricDollar,
+            metricPercent
+        };
+    }
+
+    const baseReturnDollar = portfolioPoint.returnDollarByTicker?.[ticker];
+    const baseReturnPercent = portfolioPoint.returnPercentByTicker?.[ticker];
+    let metricDollar = baseReturnDollar;
+    let metricPercent = baseReturnPercent;
+
+    if (typeof baseReturnDollar === 'number' && Number.isFinite(baseReturnDollar) && shares > 0) {
+        metricDollar = baseReturnDollar + (hoveredValue - baseValue);
+        if (typeof baseReturnPercent === 'number' && Number.isFinite(baseReturnPercent) && baseReturnPercent !== 0) {
+            const totalCost = baseReturnDollar / (baseReturnPercent / 100);
+            if (Number.isFinite(totalCost) && totalCost > 0) {
+                metricPercent = (metricDollar / totalCost) * 100;
+            }
+        }
+    }
+
+    return {
+        weightPercent,
+        value: hoveredValue,
+        metricDollar,
+        metricPercent
+    };
+}
+
+function formatHoldingMetricText(metricDollar, metricPercent) {
+    const settings = AppState.holdingsSidebarSettings || DEFAULT_HOLDINGS_SIDEBAR_SETTINGS;
+    const percentText = settings.showPercent && typeof metricPercent === 'number' && Number.isFinite(metricPercent)
+        ? formatReturnPercent(metricPercent)
+        : '';
+    const shouldUseCompactDollar =
+        settings.showDollar &&
+        settings.showPercent &&
+        settings.changeMode === 'alltime';
+    const dollarText = settings.showDollar && typeof metricDollar === 'number' && Number.isFinite(metricDollar)
+        ? (shouldUseCompactDollar ? formatSignedCurrencyCompact(metricDollar) : formatSignedCurrency(metricDollar))
+        : '';
+
+    if (!dollarText && !percentText) {
+        return {
+            text: ''
+        };
+    }
+
+    if (dollarText && percentText) {
+        return {
+            text: `${dollarText} (${percentText})`
+        };
+    }
+
+    return {
+        text: dollarText || percentText
+    };
+}
+
 function prepareLogos(tickers) {
     AppState.logosByTicker = {};
     for (const ticker of tickers) {
@@ -1029,6 +1391,7 @@ async function initHoldingsPanel() {
     if (!UI.holdingsPanel) return;
 
     initHoldingsPanelDelegation();
+    initHoldingsSettings();
 
     const trades = await extractData('data/trades.json');
     const holdings = getTickersFromTrades(trades);
@@ -1051,9 +1414,11 @@ function initHoldingsPanelDelegation() {
 }
 
 function renderHoldingsPanel(holdings) {
-    const title = UI.holdingsPanel.querySelector('.holdings-title');
+    const header = UI.holdingsPanel.querySelector('.holdings-header');
+    const settingsPanel = UI.holdingsPanel.querySelector('.holdings-settings-panel');
     UI.holdingsPanel.innerHTML = '';
-    if (title) UI.holdingsPanel.appendChild(title);
+    if (header) UI.holdingsPanel.appendChild(header);
+    if (settingsPanel) UI.holdingsPanel.appendChild(settingsPanel);
     AppState.holdingWeightElByTicker = {};
     AppState.holdingValueElByTicker = {};
     AppState.holdingReturnElByTicker = {};
@@ -1105,6 +1470,7 @@ function renderHoldingsPanel(holdings) {
     }
 
     UI.holdingsPanel.appendChild(fragment);
+    syncHoldingsSettingsUI();
 
     if (AppState.currentView === 'portfolio' && AppState.dataPoints.length > 0) {
         updateHoldingsWeights(AppState.dataPoints.length - 1);
@@ -1151,22 +1517,31 @@ function sortTickersByWeightAtIndex(tickers, index) {
     });
 }
 
-function updateHoldingMetricElements(ticker, weightPercent, value, returnPercent) {
+function updateHoldingMetricElements(ticker, weightPercent, value, metricDollar, metricPercent) {
+    const settings = AppState.holdingsSidebarSettings || DEFAULT_HOLDINGS_SIDEBAR_SETTINGS;
     if (AppState.holdingWeightElByTicker[ticker]) {
-        AppState.holdingWeightElByTicker[ticker].textContent = `Weight: ${formatWeightPercent(weightPercent)}`;
+        const weightText = formatWeightPercent(weightPercent);
+        AppState.holdingWeightElByTicker[ticker].textContent = (settings.showDollar && settings.showPercent)
+            ? weightText
+            : `Weight: ${weightText}`;
     }
     if (AppState.holdingValueElByTicker[ticker]) {
         AppState.holdingValueElByTicker[ticker].textContent = formatCurrency(value);
     }
     if (AppState.holdingReturnElByTicker[ticker]) {
         const el = AppState.holdingReturnElByTicker[ticker];
-        if (typeof returnPercent === 'number') {
-            el.textContent = formatReturnPercent(returnPercent);
-            el.classList.toggle('is-positive', returnPercent > 0);
-            el.classList.toggle('is-negative', returnPercent < 0);
-            if (returnPercent === 0) el.classList.remove('is-positive', 'is-negative');
+        const metricDisplay = formatHoldingMetricText(metricDollar, metricPercent);
+        const colorMetric = (typeof metricPercent === 'number' && Number.isFinite(metricPercent))
+            ? metricPercent
+            : metricDollar;
+        if (metricDisplay.text) {
+            el.textContent = metricDisplay.text;
+            el.classList.remove('is-stacked');
+            el.classList.toggle('is-positive', Number(colorMetric) >= 0);
+            el.classList.toggle('is-negative', Number(colorMetric) < 0);
         } else {
             el.textContent = '';
+            el.classList.remove('is-stacked');
             el.classList.remove('is-positive', 'is-negative');
         }
     }
@@ -1186,14 +1561,7 @@ function clearHoldingMetricElements() {
 }
 
 function updateHoldingsWeights(index) {
-    let latestPortfolioPoint = null;
-    for (let i = AppState.portfolioDataPoints.length - 1; i >= 0; i--) {
-        const p = AppState.portfolioDataPoints[i];
-        if (p?.holdingsValueByTicker && p?.holdingsWeightByTicker) {
-            latestPortfolioPoint = p;
-            break;
-        }
-    }
+    const latestPortfolioPoint = getLatestPortfolioPoint();
 
     if (!latestPortfolioPoint) {
         clearHoldingMetricElements();
@@ -1203,50 +1571,44 @@ function updateHoldingsWeights(index) {
     for (const ticker in AppState.holdingWeightElByTicker) {
         const weightPercent = latestPortfolioPoint.holdingsWeightByTicker?.[ticker] ?? 0;
         const value = latestPortfolioPoint.holdingsValueByTicker?.[ticker] ?? 0;
-        const returnPercent = AppState.latestReturnPercentByTicker[ticker];
-        updateHoldingMetricElements(ticker, weightPercent, value, returnPercent);
+        const metric = getHoldingMetricSnapshot(ticker, latestPortfolioPoint);
+        updateHoldingMetricElements(ticker, weightPercent, value, metric.dollar, metric.percent);
     }
 }
 
 window.updateHoldingsWeights = updateHoldingsWeights;
 
-function updateSelectedHoldingMetricsByDateStr(dateStr) {
+function updateSelectedHoldingMetricsByDataIndex(index) {
     const ticker = AppState.currentView;
     if (!ticker || ticker === 'portfolio') return;
-    if (!dateStr) return;
+    if ((AppState.holdingsSidebarSettings?.changeMode || 'today') !== 'alltime') return;
 
-    const index = AppState.portfolioIndexByDateStr[dateStr];
-    const point = typeof index === 'number' ? AppState.portfolioDataPoints[index] : null;
-    if (!point) return;
+    const metrics = getSelectedHoldingMetricsForDataIndex(index);
+    if (!metrics) return;
 
-    const weightPercent = point.holdingsWeightByTicker?.[ticker] ?? 0;
-    const value = point.holdingsValueByTicker?.[ticker] ?? 0;
-    const returnPercent = point.returnPercentByTicker?.[ticker];
-
-    updateHoldingMetricElements(ticker, weightPercent, value, returnPercent);
+    updateHoldingMetricElements(
+        ticker,
+        metrics.weightPercent,
+        metrics.value,
+        metrics.metricDollar,
+        metrics.metricPercent
+    );
 }
 
-window.updateSelectedHoldingMetricsByDateStr = updateSelectedHoldingMetricsByDateStr;
+window.updateSelectedHoldingMetricsByDataIndex = updateSelectedHoldingMetricsByDataIndex;
 
 function resetSelectedHoldingMetricsToLatest() {
     const ticker = AppState.currentView;
     if (!ticker || ticker === 'portfolio') return;
 
-    let latestPortfolioPoint = null;
-    for (let i = AppState.portfolioDataPoints.length - 1; i >= 0; i--) {
-        const p = AppState.portfolioDataPoints[i];
-        if (p?.holdingsValueByTicker && p?.holdingsWeightByTicker) {
-            latestPortfolioPoint = p;
-            break;
-        }
-    }
+    const latestPortfolioPoint = getLatestPortfolioPoint();
     if (!latestPortfolioPoint) return;
 
     const weightPercent = latestPortfolioPoint.holdingsWeightByTicker?.[ticker] ?? 0;
     const value = latestPortfolioPoint.holdingsValueByTicker?.[ticker] ?? 0;
-    const returnPercent = AppState.latestReturnPercentByTicker[ticker];
+    const metric = getHoldingMetricSnapshot(ticker, latestPortfolioPoint);
 
-    updateHoldingMetricElements(ticker, weightPercent, value, returnPercent);
+    updateHoldingMetricElements(ticker, weightPercent, value, metric.dollar, metric.percent);
 }
 
 window.resetSelectedHoldingMetricsToLatest = resetSelectedHoldingMetricsToLatest;

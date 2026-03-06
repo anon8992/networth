@@ -11,7 +11,9 @@ const UI = {
     gain: null,
     rangeButtons: null,
     backButton: null,
-    holdingsPanel: null
+    holdingsPanel: null,
+    holdingsSettingsButton: null,
+    holdingsSettingsPanel: null
 };
 
 const AppState = {
@@ -44,6 +46,9 @@ const AppState = {
 
     // latest return % per ticker 
     latestReturnPercentByTicker: {},
+    latestReturnDollarByTicker: {},
+    latestDailyChangePercentByTicker: {},
+    latestDailyChangeDollarByTicker: {},
 
     // tickers derived from trades.json
     portfolioTickers: [],
@@ -55,7 +60,13 @@ const AppState = {
     holdingWeightElByTicker: {},
     holdingValueElByTicker: {},
     holdingReturnElByTicker: {},
-    holdingsPanelDelegationInitialized: false
+    holdingsPanelDelegationInitialized: false,
+    holdingsSettingsInitialized: false,
+    holdingsSidebarSettings: {
+        changeMode: 'today',
+        showDollar: true,
+        showPercent: true
+    }
 };
 
 function initUI() {
@@ -65,4 +76,6 @@ function initUI() {
     UI.rangeButtons = document.querySelectorAll('#rangeSelector button');
     UI.backButton = document.getElementById('backToPortfolio');
     UI.holdingsPanel = document.getElementById('holdingsPanel');
+    UI.holdingsSettingsButton = document.getElementById('holdingsSettingsButton');
+    UI.holdingsSettingsPanel = document.getElementById('holdingsSettingsPanel');
 }
