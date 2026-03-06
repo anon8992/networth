@@ -1136,14 +1136,14 @@ function initRangeSelector() {
 
 const HOLDINGS_SIDEBAR_SETTINGS_STORAGE_KEY = 'folioscout.holdingsSidebarSettings';
 const DEFAULT_HOLDINGS_SIDEBAR_SETTINGS = Object.freeze({
-    changeMode: 'today',
+    changeMode: 'alltime',
     showDollar: true,
     showPercent: true
 });
 
 function normalizeHoldingsSidebarSettings(value) {
     const normalized = {
-        changeMode: value?.changeMode === 'alltime' ? 'alltime' : 'today',
+        changeMode: value?.changeMode === 'today' ? 'today' : 'alltime',
         showDollar: value?.showDollar !== false,
         showPercent: value?.showPercent !== false
     };
