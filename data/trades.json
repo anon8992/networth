@@ -65,5 +65,6 @@
   {"date": "2026-01-20", "side": "BUY", "ticker": "VFV", "amount": 8334.0},
   {"date": "2026-01-20", "side": "BUY", "ticker": "XBAL", "amount": 3381.0},
   {"date": "2026-02-26", "side": "BUY", "ticker": "XBAL", "amount": 5000},
-  {"date": "2026-02-26", "side": "BUY", "ticker": "AMZN", "amount": 10201.23}
+  {"date": "2026-02-26", "side": "BUY", "ticker": "AMZN", "amount": 10201.23},
+  {"date": "2026-02-26", "side": "BUY", "ticker": "CASH", "amount": 9000.00}
 ]
