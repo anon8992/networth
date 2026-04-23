@@ -20,6 +20,7 @@ const AppState = {
     // chart data
     dataPoints: [],
     portfolioDataPoints: [],
+    latestPortfolioLivePoint: null,
 
     // highcharts references
     chart: null,

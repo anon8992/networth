@@ -388,7 +388,7 @@ function maybeAppendSyntheticStockClose(rows, interval, ticker) {
     const info = getSyntheticMarketCloseInfo(rows, interval, getMarketSessionForTicker(ticker));
     if (!info?.closeDateStr) return rows;
 
-    const closePrice = AppState.stockPrices?.[ticker]?.[info.closeDateStr];
+    const closePrice = info.lastRow?.price;
     if (!(typeof closePrice === 'number' && Number.isFinite(closePrice))) return rows;
 
     return [...rows, {
@@ -403,20 +403,82 @@ function maybeAppendSyntheticPortfolioClose(rows, interval) {
     const info = getSyntheticMarketCloseInfo(rows, interval, DEFAULT_MARKET_SESSION);
     if (!info?.closeDateStr) return rows;
 
-    const portfolioIndex = AppState.portfolioIndexByDateStr?.[info.closeDateStr];
-    const closePoint = typeof portfolioIndex === 'number'
-        ? AppState.portfolioDataPoints?.[portfolioIndex]
-        : null;
-    if (!closePoint) return rows;
-    if (!(typeof closePoint.netWorth === 'number' && Number.isFinite(closePoint.netWorth))) return rows;
+    const closeNetWorth = info.lastRow?.netWorth;
+    if (!(typeof closeNetWorth === 'number' && Number.isFinite(closeNetWorth))) return rows;
 
     return [...rows, {
         ...info.lastRow,
         ms: info.closeMs,
         dateStr: info.closeDateStr,
-        netWorth: closePoint.netWorth,
-        contribution: closePoint.contribution
+        netWorth: closeNetWorth,
+        contribution: info.lastRow.contribution
     }];
+}
+
+async function loadLatestPortfolioLivePoint() {
+    if (!useIntradayCharts) return null;
+
+    for (const interval of ['fivemin', 'quarterhourly', 'semihourly', 'hourly']) {
+        const candidatePaths = PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL[interval] || [];
+        for (const filePath of candidatePaths) {
+            try {
+                const data = await extractData(filePath);
+                const rows = maybeAppendSyntheticPortfolioClose(normalizePortfolioIntradaySeriesRows(data), interval);
+                if (!rows.length) continue;
+
+                const points = buildPortfolioDataPointsFromSeries(rows);
+                const latestPoint = points[points.length - 1];
+                if (latestPoint) return latestPoint;
+            } catch (e) {
+                // try next source
+            }
+        }
+    }
+
+    return null;
+}
+
+function shouldUseLatestPortfolioLivePoint(endPoint) {
+    if (AppState.currentView !== 'portfolio') return false;
+    const livePoint = AppState.latestPortfolioLivePoint;
+    if (!livePoint || !endPoint) return false;
+    if (!(typeof livePoint.netWorth === 'number' && Number.isFinite(livePoint.netWorth))) return false;
+    if (!(typeof livePoint.date === 'number' && Number.isFinite(livePoint.date))) return false;
+    return livePoint.date >= endPoint.date;
+}
+
+function calculatePeriodReturnBetweenPoints(prevPoint, currPoint) {
+    const cashFlow = (currPoint.contribution ?? 0) - (prevPoint.contribution ?? 0);
+    const base = prevPoint.netWorth + cashFlow;
+    if (base === 0) return 1;
+    const ratio = currPoint.netWorth / base;
+    return Number.isFinite(ratio) ? ratio : 1;
+}
+
+function calculateTWRRWithCustomEnd(startIndex, endIndex, customEndPoint, replaceEndPoint) {
+    if (!customEndPoint) return calculateTWRR(startIndex, endIndex);
+
+    let cumulativeGrowth = 1;
+    const lastRegularIndex = replaceEndPoint ? endIndex - 1 : endIndex;
+
+    for (let i = startIndex + 1; i <= lastRegularIndex; i++) {
+        cumulativeGrowth *= calculatePeriodReturn(
+            AppState.dataPoints[i - 1],
+            AppState.dataPoints[i]
+        );
+    }
+
+    const previousPoint = AppState.dataPoints[lastRegularIndex] || AppState.dataPoints[startIndex];
+    if (previousPoint && previousPoint !== customEndPoint) {
+        cumulativeGrowth *= calculatePeriodReturnBetweenPoints(previousPoint, customEndPoint);
+    }
+
+    return (cumulativeGrowth - 1) * 100;
+}
+
+function getLatestPortfolioLiveHeaderPoint(endPoint) {
+    if (!shouldUseLatestPortfolioLivePoint(endPoint)) return null;
+    return AppState.latestPortfolioLivePoint;
 }
 
 function normalizePriceSeriesRows(rows) {
@@ -813,6 +875,8 @@ async function prepareData() {
         AppState.latestDailyChangePercentByTicker = { ...(latestPortfolioPoint.dailyChangePercentByTicker || {}) };
         AppState.latestDailyChangeDollarByTicker = { ...(latestPortfolioPoint.dailyChangeDollarByTicker || {}) };
     }
+
+    AppState.latestPortfolioLivePoint = await loadLatestPortfolioLivePoint();
 }
 
 function updateHeader(hoverIndex, seriesName = 'Net worth') {
@@ -896,6 +960,19 @@ function resetHeader() {
         }
     }
     if (startIndex === -1 || endIndex === -1 || startIndex >= endIndex) {
+        const livePoint = getLatestPortfolioLiveHeaderPoint(AppState.dataPoints[AppState.dataPoints.length - 1]);
+        if (livePoint && defaultSeriesName !== 'Contributions') {
+            const gain = livePoint.netGain ?? (livePoint.netWorth - livePoint.contribution);
+            const twrr = livePoint.TWRR ?? 0;
+            const color = twrr < 0 ? COLORS.RED : COLORS.GREEN;
+            setLockednetWorthSeriesColor(color);
+            UI.headline.style.color = color;
+            const gainSign = gain >= 0 ? '+' : '-';
+            const twrrSign = twrr >= 0 ? '+' : '';
+            animateDisplay(`$${formatNumber(livePoint.netWorth)}`);
+            UI.gain.textContent = `${gainSign}$${formatNumber(Math.abs(gain))} (${twrrSign}${formatNumber(twrr)}%)`;
+            return;
+        }
         updateHeader(AppState.dataPoints.length - 1, defaultSeriesName);
         return;
     }
@@ -906,7 +983,15 @@ function resetHeader() {
     }
 
     const endPoint = AppState.dataPoints[endIndex];
-    const stats = getDisplayChangeStats(startIndex, endIndex);
+    const livePoint = getLatestPortfolioLiveHeaderPoint(endPoint);
+    const headerEndPoint = livePoint || endPoint;
+    const replaceEndPoint = Boolean(livePoint && livePoint.dateStr === endPoint.dateStr);
+    const stats = livePoint
+        ? {
+            gain: headerEndPoint.netWorth - AppState.dataPoints[startIndex].netWorth - (headerEndPoint.contribution - AppState.dataPoints[startIndex].contribution),
+            twrr: calculateTWRRWithCustomEnd(startIndex, endIndex, headerEndPoint, replaceEndPoint)
+        }
+        : getDisplayChangeStats(startIndex, endIndex);
     const gain = stats?.gain ?? 0;
     const twrr = stats?.twrr ?? 0;
 
@@ -920,7 +1005,7 @@ function resetHeader() {
     const gainSign = gain >= 0 ? '+' : '-';
     const twrrSign = twrr >= 0 ? '+' : '';
 
-    animateDisplay(`$${formatNumber(endPoint.netWorth)}`);
+    animateDisplay(`$${formatNumber(headerEndPoint.netWorth)}`);
     UI.gain.textContent = `${gainSign}$${formatNumber(Math.abs(gain))} (${twrrSign}${formatNumber(twrr)}%)`;
 }
 
