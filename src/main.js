@@ -63,12 +63,14 @@ const SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES = {
 };
 const DEFAULT_MARKET_SESSION = Object.freeze({
     timeZone: 'America/Denver',
+    openTotalMinutes: 7 * 60 + 30,
     closeTotalMinutes: 14 * 60
 });
 const MARKET_SESSION_BY_TICKER_SUFFIX = Object.freeze([
     {
         suffix: '.PA',
         timeZone: 'Europe/Paris',
+        openTotalMinutes: 9 * 60,
         closeTotalMinutes: 17 * 60 + 30
     }
 ]);
@@ -218,8 +220,9 @@ function getMarketSessionForTicker(ticker) {
     return DEFAULT_MARKET_SESSION;
 }
 
-function getMarketCloseMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSION) {
+function getMarketSessionBoundaryMsForEpoch(epochMs, totalMinutes, marketSession = DEFAULT_MARKET_SESSION) {
     if (!Number.isFinite(epochMs)) return null;
+    if (!Number.isFinite(totalMinutes)) return null;
 
     const resolvedMarketSession = marketSession || DEFAULT_MARKET_SESSION;
     const marketDate = getDatePartsInTimeZone(epochMs, resolvedMarketSession.timeZone);
@@ -227,13 +230,23 @@ function getMarketCloseMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSIO
         return null;
     }
 
-    const closeHour = Math.floor(resolvedMarketSession.closeTotalMinutes / 60);
-    const closeMinute = resolvedMarketSession.closeTotalMinutes % 60;
-    const utcGuessMs = Date.UTC(marketDate.year, marketDate.month - 1, marketDate.day, closeHour, closeMinute, 0);
+    const boundaryHour = Math.floor(totalMinutes / 60);
+    const boundaryMinute = totalMinutes % 60;
+    const utcGuessMs = Date.UTC(marketDate.year, marketDate.month - 1, marketDate.day, boundaryHour, boundaryMinute, 0);
     const offsetMinutes = getTimeZoneOffsetMinutes(resolvedMarketSession.timeZone, utcGuessMs);
     if (!Number.isFinite(offsetMinutes)) return null;
 
     return utcGuessMs - (offsetMinutes * 60 * 1000);
+}
+
+function getMarketOpenMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSION) {
+    const resolvedMarketSession = marketSession || DEFAULT_MARKET_SESSION;
+    return getMarketSessionBoundaryMsForEpoch(epochMs, resolvedMarketSession.openTotalMinutes, resolvedMarketSession);
+}
+
+function getMarketCloseMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSION) {
+    const resolvedMarketSession = marketSession || DEFAULT_MARKET_SESSION;
+    return getMarketSessionBoundaryMsForEpoch(epochMs, resolvedMarketSession.closeTotalMinutes, resolvedMarketSession);
 }
 
 function isIntradayStockInterval(interval) {
@@ -1094,7 +1107,9 @@ async function setRange(range, options = {}) {
         const marketSession = AppState.currentView === 'portfolio'
             ? DEFAULT_MARKET_SESSION
             : getMarketSessionForTicker(AppState.currentView);
+        const marketOpenMs = getMarketOpenMsForEpoch(endMs, marketSession);
         const marketCloseMs = getMarketCloseMsForEpoch(endMs, marketSession);
+        if (Number.isFinite(marketOpenMs)) startMs = marketOpenMs;
         if (Number.isFinite(marketCloseMs)) rangeMax = marketCloseMs;
     }
 

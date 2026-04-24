@@ -226,7 +226,7 @@ function findLastDataPointIndexOnOrBefore(targetDateMs) {
 }
 
 function shouldClipRenderedSeriesToRange(rangeMin) {
-    if (AppState.activeRange !== '1m') return false;
+    if (!['1d', '1m'].includes(AppState.activeRange)) return false;
     if (!INTERVAL_MS_BY_STOCK_INTERVAL[AppState.activeStockInterval]) return false;
     return Number.isFinite(rangeMin);
 }
