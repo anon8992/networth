@@ -198,7 +198,19 @@ def main() -> None:
             time.sleep(max(args.sleep_ms, 0) / 1000.0)
             continue
 
-        merged = merge_rows(existing, new_rows)
+        # Full mode rebuilds the fetched range, but retain any existing tail
+        # newer than Yahoo's response. Providers can temporarily regress by a
+        # trading day, and a full refresh must not move the file backward.
+        base_rows = existing
+        if args.full:
+            newest_fetched = new_rows[-1][0]
+            base_rows = [row for row in existing if row[0] > newest_fetched]
+            if base_rows:
+                log(
+                    f"{ticker}: preserving {len(base_rows)} existing row(s) "
+                    f"newer than fetched data ({newest_fetched})"
+                )
+        merged = merge_rows(base_rows, new_rows)
         if merged != existing:
             write_price_rows(path, merged)
             updated += 1

@@ -12,9 +12,24 @@ const NET_WORTH_FILE = path.join(DATA_DIR, 'networth.json');
 const CONTRIBUTIONS_FILE = path.join(DATA_DIR, 'contributions.json');
 
 function parseArgs() {
+    const startIndex = process.argv.indexOf('--start');
+    const startEquals = process.argv.find(arg => arg.startsWith('--start='));
+    const start = startEquals
+        ? startEquals.slice('--start='.length)
+        : startIndex >= 0
+            ? process.argv[startIndex + 1]
+            : null;
+
     return {
         force: process.argv.includes('--force'),
+        start,
     };
+}
+
+function isValidDateString(value) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function fileHasData(filePath) {
@@ -123,11 +138,21 @@ function groupContributionsByDate(contributions) {
 function calculateNetWorth() {
     const args = parseArgs();
 
+    if (args.start !== null && !isValidDateString(args.start)) {
+        console.error('Error: --start must be a valid date in YYYY-MM-DD format.');
+        process.exit(1);
+    }
+
     const existingFiles = [];
     if (fileHasData(NET_WORTH_FILE)) existingFiles.push('networth.json');
     if (fileHasData(CONTRIBUTIONS_FILE)) existingFiles.push('contributions.json');
 
-    if (existingFiles.length > 0 && !args.force) {
+    if (args.start && existingFiles.length !== 2) {
+        console.error('Error: partial recalculation requires existing networth.json and contributions.json data.');
+        process.exit(1);
+    }
+
+    if (existingFiles.length > 0 && !args.force && !args.start) {
         console.error(`Error: ${existingFiles.join(' and ')} already contain data.`);
         console.error('Running this script will overwrite the existing data.');
         console.error('Use --force if you are sure you want to continue.');
@@ -169,6 +194,12 @@ function calculateNetWorth() {
     const allDates = getAllDates(trades, stockPrices);
     const firstTradeDate = trades.map(t => t.date).sort()[0];
     const lastDate = allDates[allDates.length - 1];
+
+    if (args.start && (args.start < firstTradeDate || args.start > lastDate)) {
+        console.error(`Error: --start must be between ${firstTradeDate} and ${lastDate}.`);
+        process.exit(1);
+    }
+
     const relevantDates = generateDateRange(firstTradeDate, lastDate);
 
     console.log(`Processing ${relevantDates.length} dates from ${firstTradeDate} to ${lastDate}`);
@@ -232,11 +263,32 @@ function calculateNetWorth() {
         contributionsData.push([dateStr, contributions]);
     }
 
-    saveJSON(NET_WORTH_FILE, netWorthData);
-    saveJSON(CONTRIBUTIONS_FILE, contributionsData);
+    let outputNetWorthData = netWorthData;
+    let outputContributionsData = contributionsData;
 
-    const lastEntry = netWorthData[netWorthData.length - 1];
-    const lastContrib = contributionsData[contributionsData.length - 1];
+    if (args.start) {
+        const existingNetWorth = loadJSON(NET_WORTH_FILE);
+        const existingContributions = loadJSON(CONTRIBUTIONS_FILE);
+        const netWorthPrefix = existingNetWorth.filter(entry => entry?.[0] < args.start);
+        const contributionsPrefix = existingContributions.filter(entry => entry?.[0] < args.start);
+
+        outputNetWorthData = [
+            ...netWorthPrefix,
+            ...netWorthData.filter(entry => entry[0] >= args.start),
+        ];
+        outputContributionsData = [
+            ...contributionsPrefix,
+            ...contributionsData.filter(entry => entry[0] >= args.start),
+        ];
+
+        console.log(`Preserved existing rows before ${args.start}; replaced ${args.start} through ${lastDate}.`);
+    }
+
+    saveJSON(NET_WORTH_FILE, outputNetWorthData);
+    saveJSON(CONTRIBUTIONS_FILE, outputContributionsData);
+
+    const lastEntry = outputNetWorthData[outputNetWorthData.length - 1];
+    const lastContrib = outputContributionsData[outputContributionsData.length - 1];
     console.log('\n--- Summary ---');
     console.log(`Latest date: ${lastEntry[0]}`);
     console.log(`Net worth: $${lastEntry[1].toLocaleString()}`);

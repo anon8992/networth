@@ -170,6 +170,11 @@ def parse_args() -> argparse.Namespace:
         default=150,
         help="Delay between ticker requests in milliseconds. Default: 150",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Rebuild each interval from fetched data instead of merging existing rows.",
+    )
     return parser.parse_args()
 
 
@@ -207,7 +212,7 @@ def main() -> None:
                 log(f"  {cfg.folder}: no data returned")
                 continue
 
-            merged = dict(existing)
+            merged = {} if args.full else dict(existing)
             merged.update(fetched)
             trimmed = trim_rows(merged, cfg.lookback_days)
 
