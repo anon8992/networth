@@ -335,10 +335,83 @@ function shouldUsePreviousCloseForOneDayStockChange() {
     return isIntradayStockInterval(AppState.activeStockInterval);
 }
 
+function shouldUsePreviousCloseForOneDayPortfolioChange() {
+    if (sharedConfig.usePreviousCloseForOneDayStockChange !== true) return false;
+    if (AppState.currentView !== 'portfolio') return false;
+    if (AppState.activeRange !== '1d') return false;
+    return isIntradayStockInterval(AppState.activeStockInterval);
+}
+
+function getPreviousPortfolioDailyClose(dateStr) {
+    if (typeof dateStr !== 'string' || !dateStr) return null;
+
+    const points = AppState.portfolioDataPoints;
+    if (!Array.isArray(points) || !points.length) return null;
+
+    let lo = 0;
+    let hi = points.length - 1;
+    let bestIdx = -1;
+
+    while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        const midDate = points[mid]?.dateStr;
+
+        if (typeof midDate === 'string' && midDate < dateStr) {
+            bestIdx = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    return bestIdx >= 0 ? points[bestIdx] : null;
+}
+
+function calculatePortfolioOneDayStatsFromPreviousClose(
+    startIndex,
+    endIndex,
+    customEndPoint = null,
+    replaceEndPoint = false
+) {
+    const startPoint = AppState.dataPoints[startIndex];
+    const regularEndPoint = AppState.dataPoints[endIndex];
+    const endPoint = customEndPoint || regularEndPoint;
+    if (!startPoint || !endPoint) return null;
+
+    const previousClose = getPreviousPortfolioDailyClose(startPoint.dateStr);
+    if (!previousClose) return null;
+
+    let cumulativeGrowth = 1;
+    let previousPoint = previousClose;
+    const lastRegularIndex = customEndPoint && replaceEndPoint ? endIndex - 1 : endIndex;
+
+    for (let i = startIndex; i <= lastRegularIndex; i++) {
+        const point = AppState.dataPoints[i];
+        if (!point) continue;
+        cumulativeGrowth *= calculatePeriodReturnBetweenPoints(previousPoint, point);
+        previousPoint = point;
+    }
+
+    if (customEndPoint && previousPoint !== customEndPoint) {
+        cumulativeGrowth *= calculatePeriodReturnBetweenPoints(previousPoint, customEndPoint);
+    }
+
+    const contributionChange = (endPoint.contribution ?? 0) - (previousClose.contribution ?? 0);
+    return {
+        gain: endPoint.netWorth - previousClose.netWorth - contributionChange,
+        twrr: (cumulativeGrowth - 1) * 100
+    };
+}
+
 function getDisplayChangeStats(startIndex, endIndex, options = {}) {
     const startPoint = AppState.dataPoints[startIndex];
     const endPoint = AppState.dataPoints[endIndex];
     if (!startPoint || !endPoint) return null;
+
+    if (shouldUsePreviousCloseForOneDayPortfolioChange()) {
+        const stats = calculatePortfolioOneDayStatsFromPreviousClose(startIndex, endIndex);
+        if (stats) return stats;
+    }
 
     if (shouldUsePreviousCloseForOneDayStockChange()) {
         const previousClose = getPreviousDailyClose(AppState.currentView, startPoint.dateStr);
@@ -457,6 +530,17 @@ function shouldUseLatestPortfolioLivePoint(endPoint) {
     if (!livePoint || !endPoint) return false;
     if (!(typeof livePoint.netWorth === 'number' && Number.isFinite(livePoint.netWorth))) return false;
     if (!(typeof livePoint.date === 'number' && Number.isFinite(livePoint.date))) return false;
+
+    const latestRegularPoint = AppState.portfolioDataPoints?.[AppState.portfolioDataPoints.length - 1];
+    if (
+        latestRegularPoint &&
+        typeof latestRegularPoint.date === 'number' &&
+        Number.isFinite(latestRegularPoint.date) &&
+        endPoint.date < latestRegularPoint.date
+    ) {
+        return false;
+    }
+
     return livePoint.date >= endPoint.date;
 }
 
@@ -772,11 +856,12 @@ async function prepareData() {
 
     await loadStockPrices(AppState.portfolioTickers);
 
-    const tradesByDate = {};
-    for (const trade of trades) {
-        if (!tradesByDate[trade.date]) tradesByDate[trade.date] = [];
-        tradesByDate[trade.date].push(trade);
-    }
+    const sortedTrades = [...trades].sort((a, b) => {
+        const dateCmp = String(a?.date || '').localeCompare(String(b?.date || ''));
+        if (dateCmp !== 0) return dateCmp;
+        return String(a?.ticker || '').localeCompare(String(b?.ticker || ''));
+    });
+    let nextTradeIndex = 0;
 
     const positionsByTicker = {};
     const contributionsByDate = {};
@@ -794,14 +879,19 @@ async function prepareData() {
         if (typeof dateStr !== 'string' || typeof netWorth !== 'number') continue;
         const utcDateInMS = Date.parse(dateStr);
 
-        const todaysTrades = tradesByDate[dateStr] || [];
-        for (const trade of todaysTrades) {
-            const price = getStockPrice(trade.ticker, dateStr);
+        while (
+            nextTradeIndex < sortedTrades.length &&
+            typeof sortedTrades[nextTradeIndex]?.date === 'string' &&
+            sortedTrades[nextTradeIndex].date <= dateStr
+        ) {
+            const trade = sortedTrades[nextTradeIndex];
+            const price = getStockPrice(trade.ticker, trade.date);
             positionsByTicker[trade.ticker] = processTrade(
                 positionsByTicker[trade.ticker],
                 trade,
                 price
             );
+            nextTradeIndex += 1;
         }
 
         const valueByTicker = {};
@@ -999,12 +1089,15 @@ function resetHeader() {
     const livePoint = getLatestPortfolioLiveHeaderPoint(endPoint);
     const headerEndPoint = livePoint || endPoint;
     const replaceEndPoint = Boolean(livePoint && livePoint.dateStr === endPoint.dateStr);
-    const stats = livePoint
+    const previousCloseStats = livePoint && shouldUsePreviousCloseForOneDayPortfolioChange()
+        ? calculatePortfolioOneDayStatsFromPreviousClose(startIndex, endIndex, headerEndPoint, replaceEndPoint)
+        : null;
+    const stats = previousCloseStats || (livePoint
         ? {
             gain: headerEndPoint.netWorth - AppState.dataPoints[startIndex].netWorth - (headerEndPoint.contribution - AppState.dataPoints[startIndex].contribution),
             twrr: calculateTWRRWithCustomEnd(startIndex, endIndex, headerEndPoint, replaceEndPoint)
         }
-        : getDisplayChangeStats(startIndex, endIndex);
+        : getDisplayChangeStats(startIndex, endIndex));
     const gain = stats?.gain ?? 0;
     const twrr = stats?.twrr ?? 0;
 

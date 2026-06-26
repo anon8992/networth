@@ -198,17 +198,20 @@ def main() -> None:
             time.sleep(max(args.sleep_ms, 0) / 1000.0)
             continue
 
-        # Full mode rebuilds the fetched range, but retain any existing tail
-        # newer than Yahoo's response. Providers can temporarily regress by a
-        # trading day, and a full refresh must not move the file backward.
+        # Full mode rebuilds the requested range, but retain existing dates
+        # Yahoo temporarily omits. Fetched rows still replace matching dates,
+        # and filtering by --start removes stale history before the boundary.
         base_rows = existing
         if args.full:
-            newest_fetched = new_rows[-1][0]
-            base_rows = [row for row in existing if row[0] > newest_fetched]
+            fetched_dates = {row[0] for row in new_rows}
+            base_rows = [
+                row for row in existing
+                if row[0] >= args.start and row[0] not in fetched_dates
+            ]
             if base_rows:
                 log(
                     f"{ticker}: preserving {len(base_rows)} existing row(s) "
-                    f"newer than fetched data ({newest_fetched})"
+                    "missing from fetched data"
                 )
         merged = merge_rows(base_rows, new_rows)
         if merged != existing:
