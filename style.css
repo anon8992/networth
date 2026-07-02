@@ -1,4 +1,6 @@
 :root {
+  /* the site is white-only; opts out of chrome's auto dark theme and highcharts dark theming */
+  color-scheme: only light;
   --green:#00c805;
   --red:#ff4444;
   --gold:#ffd700;
@@ -144,15 +146,15 @@ body{
   padding:10px 12px 12px;
   border-bottom:1px solid #d9d9d9;
   text-align:left;
+  display:flex;
+  gap:14px;
 }
-.holdings-settings-group + .holdings-settings-group{
-  margin-top:12px;
+.holdings-settings-panel[hidden]{
+  display:none;
 }
 .holdings-settings-label{
   font-size:11px;
   font-weight:800;
-  letter-spacing:0.05em;
-  text-transform:uppercase;
   color:#7d7d7d;
   margin-bottom:8px;
 }
