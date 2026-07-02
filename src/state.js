@@ -35,6 +35,8 @@ const AppState = {
     currentView: 'portfolio',
     activeRange: 'all',
     activeStockInterval: 'daily',
+    // interval last asked for, which can be finer than the one the data resolved to
+    requestedStockInterval: 'daily',
 
     // stock price histories
     stockPrices: {},

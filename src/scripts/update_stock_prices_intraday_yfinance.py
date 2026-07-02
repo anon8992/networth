@@ -3,8 +3,9 @@
 Update intraday stock price history JSON files with yfinance (no API keys).
 
 Outputs (rolling windows):
-- data/stockPriceHistory/fivemin/{TICKER}.json      -> 5m bars, last 1 day
-- data/stockPriceHistory/quarterhourly/{TICKER}.json  -> 15m bars, last 1 day
+- data/stockPriceHistory/onemin/{TICKER}.json        -> 1m bars, last 1 day
+- data/stockPriceHistory/fivemin/{TICKER}.json      -> 5m bars, last 7 days
+- data/stockPriceHistory/quarterhourly/{TICKER}.json  -> 15m bars, last 30 days
 - data/stockPriceHistory/semihourly/{TICKER}.json    -> 30m bars, last 7 days
 - data/stockPriceHistory/hourly/{TICKER}.json        -> 60m bars, last 90 days
 """
@@ -38,8 +39,10 @@ class IntervalConfig:
 
 
 INTERVALS: tuple[IntervalConfig, ...] = (
-    IntervalConfig(folder="fivemin", interval="5m", lookback_days=1, period="5d"),
-    IntervalConfig(folder="quarterhourly", interval="15m", lookback_days=1, period="5d"),
+    # yahoo only serves 1m bars 7 days per request, so period stays at 5d
+    IntervalConfig(folder="onemin", interval="1m", lookback_days=1, period="5d"),
+    IntervalConfig(folder="fivemin", interval="5m", lookback_days=7, period="1mo"),
+    IntervalConfig(folder="quarterhourly", interval="15m", lookback_days=30, period="1mo"),
     IntervalConfig(folder="semihourly", interval="30m", lookback_days=7, period="1mo"),
     IntervalConfig(folder="hourly", interval="60m", lookback_days=90, period="6mo"),
 )

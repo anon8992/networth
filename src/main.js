@@ -5,10 +5,14 @@ const chartStartCapMs = chartStartCapDateStr ? Date.parse(`${chartStartCapDateSt
 const useIntradayCharts = sharedConfig.useIntraday === true;
 
 const STOCK_INTERVAL_BY_RANGE = {
-    '1d': 'fivemin',
-    '1w': 'semihourly',
-    '1m': 'hourly',
+    '1d': 'onemin',
+    '1w': 'fivemin',
+    '1m': 'quarterhourly',
     '3m': 'hourly'
+};
+// thinly traded tickers that don't produce enough 1m/5m bars for the finer defaults
+const STOCK_INTERVAL_BY_RANGE_BY_TICKER = {
+    XBAL: { '1d': 'fivemin', '1w': 'semihourly' }
 };
 // temporary default startup ticker; keep null to default to portfolio-on-load.
 const TEMP_INITIAL_TICKER = null;
@@ -16,6 +20,10 @@ const TEMP_INITIAL_TICKER = null;
 const STOCK_PRICE_PATHS_BY_INTERVAL = {
     daily: (ticker) => [
         `data/stockPriceHistory/${ticker}.json`
+    ],
+    onemin: (ticker) => [
+        `data/stockPriceHistory/onemin/${ticker}.json`,
+        `data/stockPriceHistory/1m/${ticker}.json`
     ],
     fivemin: (ticker) => [
         `data/stockPriceHistory/fivemin/${ticker}.json`,
@@ -35,6 +43,9 @@ const STOCK_PRICE_PATHS_BY_INTERVAL = {
     ]
 };
 const PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL = {
+    onemin: [
+        'data/networthIntraday/onemin.json'
+    ],
     fivemin: [
         'data/networthIntraday/fivemin.json'
     ],
@@ -49,6 +60,7 @@ const PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL = {
     ]
 };
 const INTERVAL_FALLBACKS = {
+    onemin: ['fivemin', 'quarterhourly', 'semihourly', 'hourly', 'daily'],
     fivemin: ['quarterhourly', 'semihourly', 'hourly', 'daily'],
     quarterhourly: ['semihourly', 'hourly', 'daily'],
     semihourly: ['hourly', 'daily'],
@@ -56,6 +68,7 @@ const INTERVAL_FALLBACKS = {
     daily: []
 };
 const SYNTHETIC_MARKET_CLOSE_APPEND_MINUTES = {
+    onemin: 1,
     fivemin: 5,
     quarterhourly: 15,
     semihourly: 30,
@@ -84,9 +97,10 @@ function normalizeChartStartDate(value) {
     return trimmed;
 }
 
-function getPreferredStockIntervalForRange(range) {
+function getPreferredStockIntervalForRange(range, ticker) {
     if (!useIntradayCharts) return 'daily';
-    return STOCK_INTERVAL_BY_RANGE[range] || 'daily';
+    const override = STOCK_INTERVAL_BY_RANGE_BY_TICKER[ticker]?.[range];
+    return override || STOCK_INTERVAL_BY_RANGE[range] || 'daily';
 }
 
 function parsePriceTimestamp(value) {
@@ -250,7 +264,7 @@ function getMarketCloseMsForEpoch(epochMs, marketSession = DEFAULT_MARKET_SESSIO
 }
 
 function isIntradayStockInterval(interval) {
-    return ['fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(interval);
+    return ['onemin', 'fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(interval);
 }
 
 function getFirstDataPointMsOnOrAfter(targetMs) {
@@ -504,7 +518,7 @@ function maybeAppendSyntheticPortfolioClose(rows, interval) {
 async function loadLatestPortfolioLivePoint() {
     if (!useIntradayCharts) return null;
 
-    for (const interval of ['fivemin', 'quarterhourly', 'semihourly', 'hourly']) {
+    for (const interval of ['onemin', 'fivemin', 'quarterhourly', 'semihourly', 'hourly']) {
         const candidatePaths = PORTFOLIO_NETWORTH_PATHS_BY_INTERVAL[interval] || [];
         for (const filePath of candidatePaths) {
             try {
@@ -747,24 +761,21 @@ function buildPortfolioDataPointsFromSeries(seriesRows) {
 }
 
 async function setStockDataForInterval(ticker, interval) {
-    let effectiveInterval = interval;
-    let seriesRows = await loadStockSeriesForInterval(ticker, interval);
+    const fallbackOrder = [interval, ...(INTERVAL_FALLBACKS[interval] || [])];
 
-    if (seriesRows.length === 0 && interval === 'fivemin') {
-        effectiveInterval = 'quarterhourly';
-        seriesRows = await loadStockSeriesForInterval(ticker, 'quarterhourly');
+    for (const candidateInterval of fallbackOrder) {
+        const seriesRows = await loadStockSeriesForInterval(ticker, candidateInterval);
+        if (seriesRows.length === 0) continue;
+        // 1m data can be too sparse to draw a decent chart; prefer 5m then
+        if (candidateInterval === 'onemin' && seriesRows.length < 100) continue;
+
+        AppState.dataPoints = buildStockDataPointsFromSeries(seriesRows);
+        AppState.activeStockInterval = candidateInterval;
+        AppState.requestedStockInterval = interval;
+        return true;
     }
 
-    if (seriesRows.length === 0 && effectiveInterval !== 'daily') {
-        effectiveInterval = 'daily';
-        seriesRows = await loadStockSeriesForInterval(ticker, 'daily');
-    }
-
-    if (seriesRows.length === 0) return false;
-
-    AppState.dataPoints = buildStockDataPointsFromSeries(seriesRows);
-    AppState.activeStockInterval = effectiveInterval;
-    return true;
+    return false;
 }
 
 async function setPortfolioDataForInterval(interval) {
@@ -775,6 +786,7 @@ async function setPortfolioDataForInterval(interval) {
             if (!Array.isArray(AppState.portfolioDataPoints) || AppState.portfolioDataPoints.length === 0) continue;
             AppState.dataPoints = AppState.portfolioDataPoints.slice();
             AppState.activeStockInterval = 'daily';
+            AppState.requestedStockInterval = interval;
             return true;
         }
 
@@ -783,9 +795,12 @@ async function setPortfolioDataForInterval(interval) {
 
         const points = buildPortfolioDataPointsFromSeries(rows);
         if (!points.length) continue;
+        // 1m data can be too sparse to draw a decent chart; prefer 5m then
+        if (candidateInterval === 'onemin' && points.length < 100) continue;
 
         AppState.dataPoints = points;
         AppState.activeStockInterval = candidateInterval;
+        AppState.requestedStockInterval = interval;
         return true;
     }
 
@@ -795,8 +810,12 @@ async function setPortfolioDataForInterval(interval) {
 async function ensureStockIntervalForRange(range, options = {}) {
     if (!useIntradayCharts) return false;
 
-    const desiredInterval = getPreferredStockIntervalForRange(range);
-    if (desiredInterval === AppState.activeStockInterval) return false;
+    const viewedTicker = AppState.currentView !== 'portfolio' ? AppState.currentView : null;
+    const desiredInterval = getPreferredStockIntervalForRange(range, viewedTicker);
+    // requestedStockInterval remembers what we asked for even when the data
+    // fell back to a coarser interval, so we don't rebuild (and kill the
+    // draw animation) when the same range is applied right after
+    if (desiredInterval === AppState.activeStockInterval || desiredInterval === AppState.requestedStockInterval) return false;
 
     let changed = false;
     if (AppState.currentView === 'portfolio') {
@@ -1812,10 +1831,8 @@ function initBackButton() {
 }
 
 async function loadStock(ticker) {
-    const targetRange = AppState.currentView === 'portfolio'
-        ? 'all'
-        : (AppState.activeRange || 'all');
-    const desiredInterval = getPreferredStockIntervalForRange(targetRange);
+    const targetRange = AppState.activeRange || 'all';
+    const desiredInterval = getPreferredStockIntervalForRange(targetRange, ticker);
     const hasData = await setStockDataForInterval(ticker, desiredInterval);
     if (!hasData) {
         console.error(`No price data available for ${ticker}`);
@@ -1837,10 +1854,14 @@ async function loadStock(ticker) {
 }
 
 async function backToPortfolio() {
-    AppState.dataPoints = AppState.portfolioDataPoints.slice();
+    const targetRange = AppState.activeRange || 'all';
     AppState.currentView = 'portfolio';
-    AppState.activeStockInterval = 'daily';
-    AppState.activeRange = 'all';
+    const hasData = await setPortfolioDataForInterval(getPreferredStockIntervalForRange(targetRange));
+    if (!hasData) {
+        AppState.dataPoints = AppState.portfolioDataPoints.slice();
+        AppState.activeStockInterval = 'daily';
+        AppState.requestedStockInterval = 'daily';
+    }
     updateHoldingsWeights(AppState.dataPoints.length - 1);
 
     UI.backButton.hidden = true;
@@ -1852,5 +1873,5 @@ async function backToPortfolio() {
 
     if (AppState.chart) AppState.chart.destroy();
     createChart();
-    await setRange('all');
+    await setRange(targetRange);
 }

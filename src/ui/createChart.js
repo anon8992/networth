@@ -9,6 +9,7 @@ const SERIES_ANIMATION_DURATION_MS = 860;
 let _suppressAutoHeaderResetUntilMs = 0;
 const MOUNTAIN_TIME_ZONE = 'America/Denver';
 const INTERVAL_MS_BY_STOCK_INTERVAL = {
+    onemin: 60 * 1000,
     fivemin: 5 * 60 * 1000,
     quarterhourly: 15 * 60 * 1000,
     semihourly: 30 * 60 * 1000,
@@ -520,7 +521,7 @@ function createChart(options = {}) {
     const isStock = AppState.currentView !== 'portfolio';
     const mainSeriesName = isStock ? AppState.currentView : 'Net worth';
     const initialNetWorthColor = AppState.lockednetWorthSeriesColor || COLORS.GREEN;
-    const isIntradayInterval = ['fivemin', 'quarterhourly', 'semihourly', 'hourly'].includes(AppState.activeStockInterval);
+    const isIntradayInterval = Boolean(INTERVAL_MS_BY_STOCK_INTERVAL[AppState.activeStockInterval]);
     const shouldShowIntradayTime = isIntradayInterval;
     const shouldUseIntradayDayTicks = shouldShowIntradayTime && ['1w', '1m', '3m'].includes(AppState.activeRange);
     const intradayAxisBreaks = shouldShowIntradayTime

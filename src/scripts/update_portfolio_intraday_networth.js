@@ -12,7 +12,7 @@ const CONTRIBUTIONS_FILE = path.join(DATA_DIR, 'contributions.json');
 const STOCK_PRICE_DIR = path.join(DATA_DIR, 'stockPriceHistory');
 const OUT_DIR = path.join(DATA_DIR, 'networthIntraday');
 
-const INTERVAL_KEYS = ['fivemin', 'quarterhourly', 'semihourly', 'hourly'];
+const INTERVAL_KEYS = ['onemin', 'fivemin', 'quarterhourly', 'semihourly', 'hourly'];
 
 function log(msg) {
     console.log(`[updatePortfolioIntradayNW] ${msg}`);
