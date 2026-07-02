@@ -7,7 +7,7 @@ const usePreviousCloseForOneDayStockChange = true;
 
 const blackBoxLogos = ['ASML', 'QQQ', 'PLTR', 'AMZN', 'SOXL', 'TQQQ', 'CURE', 'INTC', 'TMF', 'UBER', 'TSLL'];
 
-const useAlphaVantageTickers = ['NA', 'XBAL', 'VFV', 'QQU', 'HUG', 'XEQT', 'ENB', 'RY', 'CDZ', 'XIU', 'ZFL', 'ZCS', 'ZEA', 'CASH', 'ZTL', 'XHD', 'XEF', 'QCN', 'ZHY', 'ZAG', 'ZCB', 'ZUAG', 'QUU', 'GLOV', 'GSWO'];
+const useAlphaVantageTickers = ['NA', 'XBAL', 'VFV', 'QQU', 'HUG', 'XEQT', 'XGRO', 'ENB', 'RY', 'CDZ', 'XIU', 'ZFL', 'ZCS', 'ZEA', 'CASH', 'ZTL', 'XHD', 'XEF', 'QCN', 'ZHY', 'ZAG', 'ZCB', 'ZUAG', 'QUU', 'GLOV', 'GSWO'];
 
 const alphaVantageSymbolByTicker = {
   NA: 'NA.TRT',

@@ -102,6 +102,10 @@
   {"date": "2026-06-25", "side": "BUY", "ticker": "BRK-B", "amount": 3517.74},
   {"date": "2026-06-25", "side": "BUY", "ticker": "UBER", "amount": 428.08},
   {"date": "2026-06-25", "side": "BUY", "ticker": "AMZN", "amount": 4272.18},
-  {"date": "2026-06-25", "side": "BUY", "ticker": "XBAL", "amount": 3709.68}
+  {"date": "2026-06-25", "side": "BUY", "ticker": "XBAL", "amount": 3709.68},
+  
+  {"date": "2026-07-01", "side": "BUY", "ticker": "XBAL", "amount": 2000.00},
+  {"date": "2026-07-01", "side": "BUY", "ticker": "BRK-B", "amount": 1000.00}
+
 
 ]

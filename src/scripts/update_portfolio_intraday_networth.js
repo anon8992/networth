@@ -229,12 +229,10 @@ async function loadDailyPriceLookup(tickers) {
     return out;
 }
 
-function getDailyPrice(priceLookupByTicker, ticker, dateStr) {
+// latest daily entry at or before dateStr, as { date, price }
+function getDailyPriceEntry(priceLookupByTicker, ticker, dateStr) {
     const lookup = priceLookupByTicker[ticker];
     if (!lookup) return null;
-
-    const direct = lookup.byDate.get(dateStr);
-    if (typeof direct === 'number' && Number.isFinite(direct)) return direct;
 
     const dates = lookup.dates;
     let lo = 0;
@@ -250,8 +248,14 @@ function getDailyPrice(priceLookupByTicker, ticker, dateStr) {
         }
     }
     if (best < 0) return null;
-    const fallback = lookup.byDate.get(dates[best]);
-    return (typeof fallback === 'number' && Number.isFinite(fallback)) ? fallback : null;
+    const price = lookup.byDate.get(dates[best]);
+    if (!(typeof price === 'number' && Number.isFinite(price))) return null;
+    return { date: dates[best], price };
+}
+
+function getDailyPrice(priceLookupByTicker, ticker, dateStr) {
+    const entry = getDailyPriceEntry(priceLookupByTicker, ticker, dateStr);
+    return entry ? entry.price : null;
 }
 
 function applyTradeAndCash(state, trade, dailyPriceLookupByTicker) {
@@ -353,9 +357,11 @@ function buildIntervalRows({
 
         const cursorByTicker = {};
         const lastPriceByTicker = {};
+        const lastPriceDateByTicker = {};
         for (const ticker of tickers) {
             cursorByTicker[ticker] = -1;
             lastPriceByTicker[ticker] = null;
+            lastPriceDateByTicker[ticker] = '';
         }
 
         const outRows = [];
@@ -397,12 +403,16 @@ function buildIntervalRows({
                 while (cursor + 1 < rows.length && rows[cursor + 1].ms <= ts) {
                     cursor += 1;
                     lastPriceByTicker[ticker] = rows[cursor].price;
+                    lastPriceDateByTicker[ticker] = toDateStrUTC(rows[cursor].ms) || '';
                 }
                 cursorByTicker[ticker] = cursor;
 
                 let price = lastPriceByTicker[ticker];
-                if (!(typeof price === 'number' && Number.isFinite(price))) {
-                    price = getDailyPrice(dailyPriceLookupByTicker, ticker, dateStr);
+                // fall back to the daily file when the intraday price is missing
+                // or older than the last daily close (e.g. tsx holiday gaps)
+                const daily = getDailyPriceEntry(dailyPriceLookupByTicker, ticker, dateStr);
+                if (daily && (!(typeof price === 'number' && Number.isFinite(price)) || daily.date > lastPriceDateByTicker[ticker])) {
+                    price = daily.price;
                 }
                 if (!(typeof price === 'number' && Number.isFinite(price))) continue;
 
