@@ -766,8 +766,6 @@ async function setStockDataForInterval(ticker, interval) {
     for (const candidateInterval of fallbackOrder) {
         const seriesRows = await loadStockSeriesForInterval(ticker, candidateInterval);
         if (seriesRows.length === 0) continue;
-        // 1m data can be too sparse to draw a decent chart; prefer 5m then
-        if (candidateInterval === 'onemin' && seriesRows.length < 100) continue;
 
         AppState.dataPoints = buildStockDataPointsFromSeries(seriesRows);
         AppState.activeStockInterval = candidateInterval;
@@ -795,8 +793,6 @@ async function setPortfolioDataForInterval(interval) {
 
         const points = buildPortfolioDataPointsFromSeries(rows);
         if (!points.length) continue;
-        // 1m data can be too sparse to draw a decent chart; prefer 5m then
-        if (candidateInterval === 'onemin' && points.length < 100) continue;
 
         AppState.dataPoints = points;
         AppState.activeStockInterval = candidateInterval;
