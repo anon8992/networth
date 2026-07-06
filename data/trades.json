@@ -26,7 +26,7 @@
   {"date": "2024-11-12", "side": "BUY", "ticker": "CASH", "amount": 30042.95},
   {"date": "2024-11-12", "side": "BUY", "ticker": "BND", "amount": 15393.95},
   {"date": "2024-11-12", "side": "BUY", "ticker": "CASH", "amount": 115147.95},
-  {"date": "2024-11-12", "side": "BUY", "ticker": "XHD", "amount": 21195.95},
+  {"date": "2024-11-12", "side": "BUY", "ticker": "SCHD", "amount": 20195.95},
   {"date": "2024-11-12", "side": "BUY", "ticker": "XEF", "amount": 19082.45},
   {"date": "2024-11-12", "side": "BUY", "ticker": "VFV", "amount": 27703.95},
   {"date": "2024-12-03", "side": "SELL", "ticker": "CASH", "amount": 29990.05},

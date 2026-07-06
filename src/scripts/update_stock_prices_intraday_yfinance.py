@@ -148,7 +148,15 @@ def fetch_intraday_rows(symbol: str, interval: str, period: str) -> dict[str, fl
 
 
 def trim_rows(rows: dict[str, float], lookback_days: int) -> dict[str, float]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    if not rows:
+        return {}
+    # anchor to the newest bar instead of the wall clock, so market holidays
+    # don't slowly eat the last session out of the rolling window
+    try:
+        latest = datetime.strptime(max(rows), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        latest = datetime.now(timezone.utc)
+    cutoff = latest - timedelta(days=lookback_days)
     out: dict[str, float] = {}
     for ts, px in rows.items():
         try:

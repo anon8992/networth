@@ -10,10 +10,9 @@ const STOCK_INTERVAL_BY_RANGE = {
     '1m': 'quarterhourly',
     '3m': 'hourly'
 };
-// thinly traded tickers that don't produce enough 1m/5m bars for the finer defaults
-const STOCK_INTERVAL_BY_RANGE_BY_TICKER = {
-    XBAL: { '1d': 'fivemin', '1w': 'semihourly' }
-};
+// thinly traded tickers that need coarser bars than the defaults (empty for now;
+// the intra-session gap fill handles thin tickers well enough)
+const STOCK_INTERVAL_BY_RANGE_BY_TICKER = {};
 // temporary default startup ticker; keep null to default to portfolio-on-load.
 const TEMP_INITIAL_TICKER = null;
 
@@ -648,6 +647,31 @@ function normalizePortfolioIntradaySeriesRows(rows) {
         .filter((row) => typeof row.dateStr === 'string');
 }
 
+// thin tickers skip many bars; carry the last price through intra-session gaps
+// so points sit at their true times and axis breaks only trigger between sessions.
+// filling between actual prints (not a fixed session grid) keeps this working
+// for exchanges with different hours, like SU.PA on euronext paris
+function fillIntradaySeriesGaps(rows, interval) {
+    const barMs = INTERVAL_MS_BY_STOCK_INTERVAL[interval];
+    if (!barMs) return rows;
+
+    const sessionGapMs = 2 * 60 * 60 * 1000; // gaps beyond this are session boundaries
+    const filled = [];
+    for (const row of rows) {
+        const prev = filled[filled.length - 1];
+        if (prev) {
+            const gap = row.ms - prev.ms;
+            if (gap > barMs && gap <= sessionGapMs) {
+                for (let ms = prev.ms + barMs; ms < row.ms; ms += barMs) {
+                    filled.push({ ms, price: prev.price, dateStr: toDateStrUTC(ms) });
+                }
+            }
+        }
+        filled.push(row);
+    }
+    return filled;
+}
+
 async function loadStockSeriesForInterval(ticker, interval) {
     if (!AppState.stockSeriesCacheByTicker[ticker]) {
         AppState.stockSeriesCacheByTicker[ticker] = {};
@@ -661,7 +685,7 @@ async function loadStockSeriesForInterval(ticker, interval) {
     for (const filePath of candidatePaths) {
         try {
             const data = await extractData(filePath);
-            const rows = maybeAppendSyntheticStockClose(normalizePriceSeriesRows(data), interval, ticker);
+            const rows = maybeAppendSyntheticStockClose(fillIntradaySeriesGaps(normalizePriceSeriesRows(data), interval), interval, ticker);
             if (rows.length > 0) {
                 cache[interval] = rows;
                 return rows;
@@ -1229,6 +1253,13 @@ async function setRange(range, options = {}) {
 
     if (range === '1m' && isIntradayStockInterval(AppState.activeStockInterval)) {
         const snappedStartMs = getFirstDataPointMsAtMountainDayBoundaryOnOrAfter(startMs);
+        if (Number.isFinite(snappedStartMs)) startMs = snappedStartMs;
+    }
+
+    // snap past weekends/holidays at the window edge so the clipped series
+    // starts at the axis min instead of leaving dead space on the left
+    if (range === '1w' && isIntradayStockInterval(AppState.activeStockInterval)) {
+        const snappedStartMs = getFirstDataPointMsOnOrAfter(startMs);
         if (Number.isFinite(snappedStartMs)) startMs = snappedStartMs;
     }
 
