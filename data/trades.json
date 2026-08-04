@@ -107,5 +107,31 @@
   {"date": "2026-07-01", "side": "BUY", "ticker": "XBAL", "amount": 2000.00},
   {"date": "2026-07-01", "side": "BUY", "ticker": "BRK-B", "amount": 1000.00},
 
-  {"date": "2026-07-03", "side": "BUY", "ticker": "BRK-B", "amount": 1000.00}
+  {"date": "2026-07-03", "side": "BUY", "ticker": "BRK-B", "amount": 1000.00},
+
+  {"date": "2026-07-10", "side": "SELL", "ticker": "AMZN", "amount": 6238.20},
+  {"date": "2026-07-10", "side": "BUY", "ticker": "AMZN", "amount": 6245.63},
+
+  {"date": "2026-07-13", "side": "SELL", "ticker": "VFV", "amount": 1950.40},
+  {"date": "2026-07-13", "side": "BUY", "ticker": "XEQT", "amount": 1935.43},
+  {"date": "2026-07-13", "side": "SELL", "ticker": "XBAL", "amount": 1967.90},
+  {"date": "2026-07-13", "side": "BUY", "ticker": "ORCL", "amount": 5702.42},
+  {"date": "2026-07-13", "side": "SELL", "ticker": "XBAL", "amount": 5823.79},
+
+  {"date": "2026-07-16", "side": "BUY", "ticker": "XBAL", "amount": 1712.64},
+  {"date": "2026-07-16", "side": "BUY", "ticker": "VFV", "amount": 2806.50},
+  {"date": "2026-07-16", "side": "BUY", "ticker": "UBER", "amount": 2830.00},
+  {"date": "2026-07-16", "side": "SELL", "ticker": "VFV", "amount": 3862.61},
+
+  {"date": "2026-07-20", "side": "SELL", "ticker": "VFV", "amount": 20000.00},
+  {"date": "2026-07-20", "side": "BUY", "ticker": "XBAL", "amount": 10000.00},
+
+  {"date": "2026-07-20", "side": "SELL", "ticker": "XBAL", "amount": 3552.00},
+  {"date": "2026-07-20", "side": "SELL", "ticker": "CASH", "amount": 4005.60},
+  {"date": "2026-07-20", "side": "SELL", "ticker": "BND", "amount": 4948.32},
+  {"date": "2026-07-20", "side": "SELL", "ticker": "BND", "amount": 6996.53},
+  {"date": "2026-07-20", "side": "BUY", "ticker": "BRK-B", "amount": 11038.12},
+  {"date": "2026-07-20", "side": "SELL", "ticker": "BND", "amount": 11228.18},
+
+  {"date": "2026-07-24", "side": "BUY", "ticker": "BRK-B", "amount": 16006.63}
 ]

@@ -559,6 +559,9 @@ function createChart(options = {}) {
                 type: 'x',
                 mouseWheel: { enabled: false }
             },
+            // pin the drag-to-zoom marker to highcharts' default blue. safari
+            // renders it black if this is left to fall back
+            selectionMarkerFill: 'rgba(51, 92, 173, 0.25)',
             animation: false,
             events: {
                 selection: function (event) {
